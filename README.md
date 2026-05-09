@@ -10,6 +10,13 @@ It works in three modes:
 
 Built-in integration plugins include `mere`, `monday`, `slack`, `github-cli`, `linear`, `jira`, `url`, `local`, and `generic`.
 
+## Docs
+
+- [Codebase Map](CODEBASE.md)
+- [Design Decisions](DECISIONS.md)
+- [Agent Guide](AGENTS.md)
+- [Operations](docs/operations.md)
+
 ```sh
 npm install -g @merekit/link
 mere-link config init --output mere.link.yaml
