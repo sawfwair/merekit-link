@@ -1,0 +1,59 @@
+{
+  "name": "@merekit/link",
+  "version": "0.1.0",
+  "description": "Standalone MereKit link graph CLI for YAML-defined integrations, projects, role surfaces, and workspace bootstrap.",
+  "private": false,
+  "license": "Apache-2.0",
+  "type": "module",
+  "types": "dist/run.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/run.d.ts",
+      "import": "./dist/run.js"
+    }
+  },
+  "author": "Sawfwair",
+  "bin": {
+    "mere-link": "dist/run.js"
+  },
+  "files": [
+    "dist",
+    "CODEBASE.md",
+    "DECISIONS.md",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "prepare": "git rev-parse --git-dir >/dev/null 2>&1 && git config core.hooksPath .githooks || true",
+    "hooks:install": "git config core.hooksPath .githooks",
+    "prepack": "pnpm build",
+    "build": "tsc -p tsconfig.json && chmod 755 dist/run.js",
+    "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "lint": "eslint . --max-warnings=0",
+    "test": "pnpm build && tsx --test test/*.test.ts",
+    "coverage": "pnpm build && c8 --include='dist/**/*.js' --reporter=text --check-coverage --lines 80 --functions 80 --branches 70 tsx --test test/*.test.ts",
+    "smoke": "pnpm build && node dist/run.js --version >/dev/null && node dist/run.js commands --json >/dev/null && node dist/run.js completion bash >/dev/null",
+    "verify": "pnpm lint && pnpm check && pnpm test && pnpm coverage && pnpm smoke && npm pack --dry-run --ignore-scripts",
+    "pack:dry": "pnpm verify"
+  },
+  "dependencies": {
+    "yaml": "^2.8.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.5.2",
+    "c8": "^11.0.0",
+    "eslint": "^10.3.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.59.2"
+  },
+  "engines": {
+    "node": ">=22 <26"
+  },
+  "packageManager": "pnpm@10.8.1"
+}
