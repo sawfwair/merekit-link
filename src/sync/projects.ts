@@ -4,6 +4,7 @@ import { isRecord, normalizeKey } from '../domain/guards.js';
 import { boolFlag, stringFlag } from '../runtime/args.js';
 import { listMereProjects, upsertMereLink, writeMereProject } from '../runtime/mere.js';
 import { selectSyncTargets } from '../config/normalize.js';
+import { executorNamespaceForSurface, executorSurfaceUrl } from './executor-policy.js';
 import type {
 	Flags,
 	IntegrationConfig,
@@ -110,29 +111,29 @@ function httpUrl(value: string): string | null {
 	}
 }
 
-function surfaceUrl(surface: SurfaceConfig, integration: IntegrationConfig): string | null {
+function surfaceUrl(config: LinkConfigFile, surface: SurfaceConfig, integration: IntegrationConfig): string | null {
 	const plugin = surface.plugin ?? integration.plugin;
-	if (plugin === 'monday' && surface.kind === 'board') {
-		const baseUrl = integration.baseUrl?.replace(/\/+$/u, '') || 'https://monday.com';
-		return `${baseUrl}/boards/${encodeURIComponent(surface.id)}`;
-	}
-	if (plugin === 'github-cli' && surface.kind === 'repo') return `https://github.com/${surface.id}`;
-	if (plugin === 'slack' && surface.kind === 'channel' && integration.workspace) {
-		return `https://${integration.workspace}.slack.com/archives/${surface.id}`;
-	}
+	const executorUrl = plugin === 'executor' ? executorSurfaceUrl(config, surface) : null;
+	if (executorUrl) return executorUrl;
 	if (plugin === 'url') return httpUrl(surface.id);
 	return null;
+}
+
+function linkKind(config: LinkConfigFile, surface: SurfaceConfig, integration: IntegrationConfig): string {
+	const plugin = surface.plugin ?? integration.plugin;
+	const namespace = plugin === 'executor' ? executorNamespaceForSurface(config, surface) : null;
+	return `${namespace ?? plugin}.${surface.kind}`;
 }
 
 function linkPlansForTarget(config: LinkConfigFile, target: SyncProjectTarget): ProjectsSyncLinkPlan[] {
 	return Object.entries(target.project.surfaces).flatMap(([role, surface]) => {
 		const integration = config.integrations[surface.integration];
 		if (!integration) return [];
-		const url = surfaceUrl(surface, integration);
+		const url = surfaceUrl(config, surface, integration);
 		if (!url) return [];
 		const plugin = surface.plugin ?? integration.plugin;
 		if (!PLUGINS[plugin]) return [];
-		const kind = `${plugin}.${surface.kind}`;
+		const kind = linkKind(config, surface, integration);
 		const label = `${target.project.name} ${role}`;
 		const payload = {
 			id: stableId('lnk_mlk', `${target.key}:${role}:${url}`),

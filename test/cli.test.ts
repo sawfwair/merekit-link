@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { spawn, spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -47,12 +48,40 @@ type ProjectsSyncPlanResult = {
 	projectCount: number;
 	linkCount: number;
 	projects: Array<{ payload: { attributes: Record<string, unknown> } }>;
-	links: Array<{ role: string; url: string }>;
+	links: Array<{ role: string; url: string; kind: string }>;
 };
 
 type ProjectsSyncApplyResult = {
 	plan: { projects: Array<{ existingId: string | null }> };
 	result: { projects: Array<{ action: string }> };
+};
+
+type ExecutorPolicyCompileResult = {
+	rules: Array<{
+		pattern: string;
+		action: string;
+		enforcement: string;
+		constraints: unknown[];
+	}>;
+};
+
+type ExecutorApplyResult = {
+	result: {
+		scopeId: string;
+		created: Array<{ pattern: string; action: string }>;
+		skipped: Array<{ pattern: string; action: string }>;
+	};
+};
+
+type ExecutorSearchResult = {
+	count: number;
+	tools: Array<{ id: string }>;
+};
+
+type FakeExecutorCall = {
+	method: string;
+	path: string;
+	data: Record<string, unknown> | null;
 };
 
 type FakeMereCall = {
@@ -74,8 +103,38 @@ function commandResult(args: string[], options: RunOptions = {}): SpawnSyncRetur
 	});
 }
 
+async function commandResultAsync(args: string[], options: RunOptions = {}): Promise<{ status: number | null; stdout: string; stderr: string }> {
+	const child = spawn(process.execPath, [bin, ...args], {
+		cwd: options.cwd ?? root,
+		env: options.env ?? process.env,
+		stdio: ['ignore', 'pipe', 'pipe']
+	});
+	const stdout: Buffer[] = [];
+	const stderr: Buffer[] = [];
+	child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
+	child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+	return new Promise((resolve, reject) => {
+		child.on('error', reject);
+		child.on('close', (status) => {
+			resolve({
+				status,
+				stdout: Buffer.concat(stdout).toString('utf8'),
+				stderr: Buffer.concat(stderr).toString('utf8')
+			});
+		});
+	});
+}
+
 function run(args: string[], options: RunOptions = {}): string {
 	const result = commandResult(args, options);
+	if (result.status !== 0) {
+		throw new Error(`mere-link ${args.join(' ')} failed\n${result.stderr}${result.stdout}`);
+	}
+	return result.stdout;
+}
+
+async function runAsync(args: string[], options: RunOptions = {}): Promise<string> {
+	const result = await commandResultAsync(args, options);
 	if (result.status !== 0) {
 		throw new Error(`mere-link ${args.join(' ')} failed\n${result.stderr}${result.stdout}`);
 	}
@@ -90,13 +149,108 @@ async function tempDir(): Promise<string> {
 	return mkdtemp(path.join(os.tmpdir(), 'mere-link-'));
 }
 
+async function readRequestJson(req: IncomingMessage): Promise<Record<string, unknown> | null> {
+	const chunks: Buffer[] = [];
+	for await (const chunk of req) {
+		const value: unknown = chunk;
+		if (Buffer.isBuffer(value)) chunks.push(value);
+		else if (typeof value === 'string') chunks.push(Buffer.from(value));
+		else if (value instanceof Uint8Array) chunks.push(Buffer.from(value));
+	}
+	const body = Buffer.concat(chunks).toString('utf8').trim();
+	return body ? parseJson<Record<string, unknown>>(body) : null;
+}
+
+function writeResponse(res: ServerResponse, status: number, value: unknown): void {
+	res.statusCode = status;
+	res.setHeader('content-type', 'application/json');
+	res.end(JSON.stringify(value));
+}
+
+async function startFakeExecutor(): Promise<{ baseUrl: string; calls: FakeExecutorCall[]; close: () => Promise<void> }> {
+	const calls: FakeExecutorCall[] = [];
+	const policies: Array<{ id: string; scopeId: string; pattern: string; action: string; position: string; createdAt: number; updatedAt: number }> = [
+		{ id: 'pol_existing', scopeId: 'scope_default', pattern: 'monday.*', action: 'approve', position: 'a0', createdAt: 1, updatedAt: 1 }
+	];
+	const server = createServer((req, res) => {
+		void (async () => {
+			const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+			const data = await readRequestJson(req);
+			calls.push({ method: req.method ?? 'GET', path: url.pathname, data });
+			if (req.method === 'GET' && url.pathname === '/api/scope') {
+				writeResponse(res, 200, { id: 'scope_default', name: 'Default', dir: process.cwd(), stack: [] });
+				return;
+			}
+			if (req.method === 'GET' && url.pathname === '/api/scopes/scope_default/sources') {
+				writeResponse(res, 200, [{ id: 'src_monday', name: 'Monday', kind: 'monday', url: 'https://monday.com' }]);
+				return;
+			}
+			if (req.method === 'GET' && url.pathname === '/api/scopes/scope_default/tools') {
+				writeResponse(res, 200, [
+					{ id: 'monday.items.update', pluginId: 'monday', sourceId: 'src_monday', name: 'Update item', description: 'Update a Monday item' },
+					{ id: 'sharepoint.files.upload', pluginId: 'sharepoint', sourceId: 'src_sharepoint', name: 'Upload file', description: 'Upload a SharePoint file' }
+				]);
+				return;
+			}
+			if (req.method === 'GET' && url.pathname === '/api/scopes/scope_default/tools/monday.items.update/schema') {
+				writeResponse(res, 200, { id: 'monday.items.update', inputSchema: { type: 'object', required: ['boardId'] } });
+				return;
+			}
+			if (req.method === 'GET' && url.pathname === '/api/scopes/scope_default/policies') {
+				writeResponse(res, 200, policies);
+				return;
+			}
+			if (req.method === 'POST' && url.pathname === '/api/scopes/scope_default/policies') {
+				const record = data ?? {};
+				const policy = {
+					id: `pol_${policies.length + 1}`,
+					scopeId: 'scope_default',
+					pattern: String(record.pattern),
+					action: String(record.action),
+					position: `a${policies.length + 1}`,
+					createdAt: 2,
+					updatedAt: 2
+				};
+				policies.push(policy);
+				writeResponse(res, 200, policy);
+				return;
+			}
+			if (req.method === 'POST' && url.pathname === '/api/executions') {
+				writeResponse(res, 200, { status: 'completed', text: '', structured: { ok: true }, isError: false });
+				return;
+			}
+			writeResponse(res, 404, { error: `not found: ${req.method ?? 'GET'} ${url.pathname}` });
+		})().catch((error: unknown) => {
+			writeResponse(res, 500, { error: error instanceof Error ? error.message : String(error) });
+		});
+	});
+	await new Promise<void>((resolve) => {
+		server.listen(0, '127.0.0.1', () => {
+			resolve();
+		});
+	});
+	const address = server.address();
+	if (!address || typeof address === 'string') throw new Error('fake executor did not bind a TCP port');
+	return {
+		baseUrl: `http://127.0.0.1:${address.port}`,
+		calls,
+		close: () => new Promise<void>((resolve, reject) => {
+			server.close((error) => {
+				if (error) reject(error);
+				else resolve();
+			});
+		})
+	};
+}
+
 test('prints a MereKit adapter manifest', () => {
 	const manifest = parseJson<ManifestResult>(run(['commands', '--json']));
 	assert.equal(manifest.namespace, 'link');
 	assert.equal(manifest.auth.kind, 'none');
-	assert.equal(manifest.commands.length, 12);
+	assert.equal(manifest.commands.length, 18);
 	assert.ok(manifest.commands.some((command) => command.id === 'generate.workspace'));
 	assert.ok(manifest.commands.some((command) => command.id === 'sync.projects'));
+	assert.ok(manifest.commands.some((command) => command.id === 'executor.policy.compile'));
 });
 
 test('initializes, validates, and resolves a starter config', async () => {
@@ -141,16 +295,22 @@ test('generates workspace config from a snapshot file', async () => {
 	assert.equal(rows.find((row) => row.role === 'projects')?.optional, 'no');
 });
 
-test('validates Monday board surfaces', async () => {
+test('validates Executor-backed product surfaces', async () => {
 	const dir = await tempDir();
 	const configPath = path.join(dir, 'mere.link.yaml');
 	await writeFile(configPath, `schemaVersion: 1
 integrations:
+  executor:
+    plugin: executor
+    baseUrl: http://localhost:4788
   monday:
-    plugin: monday
+    plugin: executor
+    namespace: monday
     tokenEnv: MONDAY_API_KEY
   slack:
-    plugin: slack
+    plugin: executor
+    namespace: slack
+    workspace: geoacuity
 entities:
   geoacuity:
     name: GeoAcuity
@@ -171,8 +331,56 @@ entities:
 `, 'utf8');
 
 	const context = parseJson<ContextResult>(run(['context', 'inspect', 'geoacuity', 'egis', '--role', 'work', '--config', configPath, '--json']));
-	assert.equal(context.surface.plugin, 'monday');
+	assert.equal(context.surface.plugin, 'executor');
 	assert.equal(context.surface.kind, 'board');
+
+	const plan = parseJson<ExecutorPolicyCompileResult>(run(['executor', 'policy', 'compile', '--config', configPath, '--json']));
+	assert.ok(plan.rules.some((rule) => rule.pattern === 'slack.channels.setTopic' && rule.action === 'require_approval' && rule.enforcement === 'executor-and-link'));
+	assert.ok(plan.rules.some((rule) => rule.pattern === 'slack.messages.send' && rule.action === 'require_approval'));
+});
+
+test('validates Executor-backed Monday and SharePoint surfaces and compiles policy', async () => {
+	const dir = await tempDir();
+	const configPath = path.join(dir, 'mere.link.yaml');
+	await writeFile(configPath, `schemaVersion: 1
+integrations:
+  executor:
+    plugin: executor
+    runtime: local
+    baseUrl: http://localhost:4788
+  monday:
+    plugin: executor
+    namespace: monday
+  sharepoint:
+    plugin: executor
+    namespace: sharepoint
+entities:
+  acme:
+    name: Acme
+    projects:
+      rollout:
+        name: Rollout
+        surfaces:
+          planning:
+            integration: monday
+            kind: board
+            id: "18204749659"
+            policy:
+              writes: [sync]
+          docs:
+            integration: sharepoint
+            kind: site
+            id: sawfwair.sharepoint.com/sites/acme
+`, 'utf8');
+
+	const context = parseJson<ContextResult>(run(['context', 'inspect', 'acme', 'rollout', '--role', 'docs', '--config', configPath, '--json']));
+	assert.equal(context.surface.plugin, 'executor');
+	assert.equal(context.surface.kind, 'site');
+
+	const plan = parseJson<ExecutorPolicyCompileResult>(run(['executor', 'policy', 'compile', '--config', configPath, '--json']));
+	assert.ok(plan.rules.some((rule) => rule.pattern === 'monday.*' && rule.action === 'approve'));
+	assert.ok(plan.rules.some((rule) => rule.pattern === 'monday.items.update' && rule.action === 'require_approval' && rule.enforcement === 'executor-and-link'));
+	assert.ok(plan.rules.some((rule) => rule.pattern === 'sharepoint.files.upload' && rule.action === 'block'));
 });
 
 test('resolves relative config paths from the original shell PWD', async () => {
@@ -196,14 +404,18 @@ integrations:
   mere:
     plugin: mere
     workspace: ws_geo
+  executor:
+    plugin: executor
   monday:
-    plugin: monday
-    baseUrl: https://geoacuity.monday.com
+    plugin: executor
+    namespace: monday
   slack:
-    plugin: slack
+    plugin: executor
+    namespace: slack
     workspace: geoacuity
   github:
-    plugin: github-cli
+    plugin: executor
+    namespace: github
 entities:
   geoacuity:
     name: GeoAcuity
@@ -246,7 +458,58 @@ entities:
 	assert.equal(plan.projectCount, 1);
 	assert.equal(plan.linkCount, 3);
 	assert.equal(plan.projects[0]?.payload.attributes.mereLinkKey, 'booz-allen-hamilton/egis');
-	assert.equal(plan.links.find((link) => link.role === 'work')?.url, 'https://geoacuity.monday.com/boards/18204749659');
+	assert.equal(plan.links.find((link) => link.role === 'work')?.url, 'https://monday.com/boards/18204749659');
+	assert.equal(plan.links.find((link) => link.role === 'discussion')?.kind, 'slack.channel');
+	assert.equal(plan.links.find((link) => link.role === 'code')?.kind, 'github.repo');
+});
+
+test('plans Executor-backed Monday and SharePoint links', async () => {
+	const dir = await tempDir();
+	const configPath = path.join(dir, 'mere.link.yaml');
+	await writeFile(configPath, `schemaVersion: 1
+integrations:
+  mere:
+    plugin: mere
+    workspace: ws_acme
+  executor:
+    plugin: executor
+    baseUrl: http://localhost:4788
+  monday:
+    plugin: executor
+    namespace: monday
+  sharepoint:
+    plugin: executor
+    namespace: sharepoint
+entities:
+  acme:
+    name: Acme
+    projects:
+      workspace:
+        name: Acme Workspace
+        surfaces:
+          projects-app:
+            integration: mere
+            kind: app
+            id: projects
+            policy:
+              writes: [sync]
+      rollout:
+        name: Rollout
+        surfaces:
+          work:
+            integration: monday
+            kind: board
+            id: "18204749659"
+          docs:
+            integration: sharepoint
+            kind: site
+            id: sawfwair.sharepoint.com/sites/acme
+`, 'utf8');
+
+	const plan = parseJson<ProjectsSyncPlanResult>(run(['sync', 'projects', 'acme', 'rollout', '--config', configPath, '--json']));
+	assert.equal(plan.linkCount, 2);
+	assert.equal(plan.links.find((link) => link.role === 'work')?.url, 'https://monday.com/boards/18204749659');
+	assert.equal(plan.links.find((link) => link.role === 'docs')?.url, 'https://sawfwair.sharepoint.com/sites/acme');
 });
 
 test('applies Mere Projects sync to configured records without updating rich fields', async () => {
@@ -259,9 +522,11 @@ integrations:
   mere:
     plugin: mere
     workspace: ws_geo
+  executor:
+    plugin: executor
   monday:
-    plugin: monday
-    baseUrl: https://geoacuity.monday.com
+    plugin: executor
+    namespace: monday
 entities:
   geoacuity:
     name: GeoAcuity
@@ -328,8 +593,11 @@ integrations:
   mere:
     plugin: mere
     workspace: ws_geo
+  executor:
+    plugin: executor
   monday:
-    plugin: monday
+    plugin: executor
+    namespace: monday
 entities:
   geoacuity:
     name: GeoAcuity
@@ -358,6 +626,103 @@ entities:
 	assert.match(result.stderr, /sync denied/i);
 });
 
+test('uses the Executor runtime boundary for sources, tool search, describe, and policy apply', async () => {
+	const fake = await startFakeExecutor();
+	try {
+		const dir = await tempDir();
+		const configPath = path.join(dir, 'mere.link.yaml');
+		await writeFile(configPath, `schemaVersion: 1
+integrations:
+  executor:
+    plugin: executor
+    baseUrl: ${fake.baseUrl}
+  monday:
+    plugin: executor
+    namespace: monday
+entities:
+  acme:
+    name: Acme
+    projects:
+      rollout:
+        name: Rollout
+        surfaces:
+          planning:
+            integration: monday
+            kind: board
+            id: "18204749659"
+            policy:
+              writes: [sync]
+`, 'utf8');
+
+		const sources = parseJson<Array<{ id: string }>>(await runAsync(['executor', 'sources', '--executor-base-url', fake.baseUrl, '--json']));
+		assert.equal(sources[0]?.id, 'src_monday');
+
+		const search = parseJson<ExecutorSearchResult>(await runAsync(['executor', 'tools', 'search', 'monday item', '--executor-base-url', fake.baseUrl, '--json']));
+		assert.equal(search.count, 1);
+		assert.equal(search.tools[0]?.id, 'monday.items.update');
+
+		const describe = parseJson<{ schema: { id: string; inputSchema: { required: string[] } } }>(await runAsync(['executor', 'tools', 'describe', 'monday.items.update', '--executor-base-url', fake.baseUrl, '--json']));
+		assert.equal(describe.schema.id, 'monday.items.update');
+		assert.deepEqual(describe.schema.inputSchema.required, ['boardId']);
+
+		const applyWithoutYes = commandResult(['executor', 'policy', 'apply', '--config', configPath, '--executor-base-url', fake.baseUrl, '--json']);
+		assert.notEqual(applyWithoutYes.status, 0);
+		assert.match(applyWithoutYes.stderr, /requires --yes/);
+
+		const applied = parseJson<ExecutorApplyResult>(await runAsync(['executor', 'policy', 'apply', '--config', configPath, '--executor-base-url', fake.baseUrl, '--yes', '--json']));
+		assert.equal(applied.result.scopeId, 'scope_default');
+		assert.ok(applied.result.skipped.some((policy) => policy.pattern === 'monday.*' && policy.action === 'approve'));
+		assert.ok(applied.result.created.some((policy) => policy.pattern === 'monday.items.update' && policy.action === 'require_approval'));
+	} finally {
+		await fake.close();
+	}
+});
+
+test('guards Executor write invocation with Link policy, apply, and resource constraints', async () => {
+	const fake = await startFakeExecutor();
+	try {
+		const dir = await tempDir();
+		const configPath = path.join(dir, 'mere.link.yaml');
+		await writeFile(configPath, `schemaVersion: 1
+integrations:
+  executor:
+    plugin: executor
+    baseUrl: ${fake.baseUrl}
+  monday:
+    plugin: executor
+    namespace: monday
+entities:
+  acme:
+    name: Acme
+    projects:
+      rollout:
+        name: Rollout
+        surfaces:
+          planning:
+            integration: monday
+            kind: board
+            id: "18204749659"
+            policy:
+              writes: [sync]
+`, 'utf8');
+
+		const noApply = commandResult(['executor', 'invoke', 'write', 'monday.items.update', '--config', configPath, '--executor-base-url', fake.baseUrl, '--data', '{"boardId":"18204749659"}', '--json']);
+		assert.notEqual(noApply.status, 0);
+		assert.match(noApply.stderr, /--apply/);
+
+		const wrongBoard = commandResult(['executor', 'invoke', 'write', 'monday.items.update', '--config', configPath, '--executor-base-url', fake.baseUrl, '--data', '{"boardId":"wrong"}', '--apply', '--json']);
+		assert.notEqual(wrongBoard.status, 0);
+		assert.match(wrongBoard.stderr, /do not match/);
+
+		const allowed = parseJson<{ status: string; structured: { ok: boolean } }>(await runAsync(['executor', 'invoke', 'write', 'monday.items.update', '--config', configPath, '--executor-base-url', fake.baseUrl, '--data', '{"boardId":"18204749659"}', '--apply', '--json']));
+		assert.equal(allowed.status, 'completed');
+		assert.equal(allowed.structured.ok, true);
+		assert.ok(fake.calls.some((call) => call.method === 'POST' && call.path === '/api/executions'));
+	} finally {
+		await fake.close();
+	}
+});
+
 test('rejects invalid integrations, kinds, write policies, and link endpoints', async () => {
 	const dir = await tempDir();
 	const configPath = path.join(dir, 'mere.link.yaml');
@@ -373,7 +738,8 @@ entities: {}
 	await writeFile(configPath, `schemaVersion: 1
 integrations:
   monday:
-    plugin: monday
+    plugin: executor
+    namespace: monday
 entities:
   acme:
     projects:
@@ -381,24 +747,24 @@ entities:
         surfaces:
           work:
             integration: monday
-            kind: repo
+            kind: workspace
             id: bad-kind
 `, 'utf8');
 	assert.match(commandResult(['config', 'validate', '--config', configPath]).stderr, /does not support surface kind/);
 
 	await writeFile(configPath, `schemaVersion: 1
 integrations:
-  slack:
-    plugin: slack
+  url:
+    plugin: url
 entities:
   acme:
     projects:
       app:
         surfaces:
           work:
-            integration: slack
-            kind: channel
-            id: C123
+            integration: url
+            kind: link
+            id: https://example.com
             policy:
               writes: [delete]
 `, 'utf8');
@@ -472,8 +838,11 @@ integrations:
   mere:
     plugin: mere
     workspace: ws_geo
+  executor:
+    plugin: executor
   monday:
-    plugin: monday
+    plugin: executor
+    namespace: monday
 entities:
   geoacuity:
     name: GeoAcuity

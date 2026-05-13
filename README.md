@@ -8,7 +8,9 @@ It works in three modes:
 - Partial Mere: combine local URLs, repos, channels, files, and selected Mere apps.
 - Full Mere: generate starter YAML from `mere ops workspace-snapshot`.
 
-Built-in integration plugins include `mere`, `monday`, `slack`, `github-cli`, `linear`, `jira`, `url`, `local`, and `generic`.
+Built-in integration plugins include `mere`, `executor`, `url`, `local`, and `generic`.
+
+`executor` is the runtime bridge for product integrations. Link keeps the declarative graph and write policy in `mere.link.yaml`; Executor owns tool discovery, schemas, auth, approvals, and invocation for systems such as Monday, SharePoint, GitHub, Slack, OpenAPI, MCP, and GraphQL.
 
 ## Docs
 
@@ -23,6 +25,8 @@ mere-link config init --output mere.link.yaml
 mere-link config validate --config mere.link.yaml
 mere-link context inspect workspace workspace --role work --config mere.link.yaml --json
 mere-link sync projects --config mere.link.yaml --json
+mere-link executor tools search "monday item" --json
+mere-link executor policy compile --config mere.link.yaml --json
 ```
 
 When bundled by `@merekit/cli`, the same command surface is available as:
@@ -37,6 +41,49 @@ mere link sync projects --config mere.link.yaml --json
 
 Existing Mere Projects records can be attached with a project surface such as `mere-project: { integration: mere, kind: record, id: prj_123 }`; Link will use that record for link upserts without touching the project narrative.
 
+Executor-backed integrations can declare product namespaces while retaining Link's surface graph:
+
+```yaml
+integrations:
+  executor:
+    plugin: executor
+    runtime: local
+    baseUrl: http://localhost:4788
+  monday:
+    plugin: executor
+    namespace: monday
+  sharepoint:
+    plugin: executor
+    namespace: sharepoint
+
+entities:
+  acme:
+    name: Acme
+    projects:
+      rollout:
+        name: Rollout
+        surfaces:
+          planning:
+            integration: monday
+            kind: board
+            id: "18204749659"
+            policy:
+              writes: [sync]
+          docs:
+            integration: sharepoint
+            kind: site
+            id: sawfwair.sharepoint.com/sites/acme
+```
+
+Compile Link policy into deterministic Executor rules before applying:
+
+```sh
+mere-link executor policy compile --config mere.link.yaml --json
+mere-link executor policy apply --config mere.link.yaml --yes --json
+```
+
+Executor writes through Link require a declared surface, compiled write policy, matching resource arguments, and `--apply`.
+
 ## YAML Shape
 
 ```yaml
@@ -45,8 +92,11 @@ integrations:
   mere:
     plugin: mere
     workspace: ws_123
+  executor:
+    plugin: executor
   github:
-    plugin: github-cli
+    plugin: executor
+    namespace: github
   url:
     plugin: url
 

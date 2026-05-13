@@ -42,7 +42,9 @@ function normalizeIntegrations(input: unknown): Record<string, IntegrationConfig
 				plugin,
 				...(readOptionalString(integration, 'workspace') ? { workspace: readOptionalString(integration, 'workspace') } : {}),
 				...(readOptionalString(integration, 'baseUrl') ? { baseUrl: readOptionalString(integration, 'baseUrl') } : {}),
-				...(readOptionalString(integration, 'tokenEnv') ? { tokenEnv: readOptionalString(integration, 'tokenEnv') } : {})
+				...(readOptionalString(integration, 'tokenEnv') ? { tokenEnv: readOptionalString(integration, 'tokenEnv') } : {}),
+				...(readOptionalString(integration, 'runtime') ? { runtime: readOptionalString(integration, 'runtime') } : {}),
+				...(readOptionalString(integration, 'namespace') ? { namespace: readOptionalString(integration, 'namespace') } : {})
 			}
 		];
 	}));

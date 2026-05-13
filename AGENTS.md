@@ -13,7 +13,9 @@
 - Keep `sync projects` dry-run by default.
 - Require `policy.writes: [sync]` for Mere Projects write planning or applying.
 - Keep JSON, YAML, and subprocess boundaries in `src/runtime/*`.
+- Keep Executor HTTP/runtime calls in `src/runtime/executor.ts`.
 - Do not overwrite rich project narrative fields when linking an existing Mere Projects record.
+- Treat Link policy as higher authority than Executor policy; Executor writes still need declared surfaces, matching resource arguments, and `--apply`.
 
 ## Verification
 

@@ -41,6 +41,8 @@ export type IntegrationConfig = {
 	workspace?: string;
 	baseUrl?: string;
 	tokenEnv?: string;
+	runtime?: string;
+	namespace?: string;
 };
 
 export type SurfaceConfig = {
@@ -148,4 +150,59 @@ export type WorkspaceSnapshotApp = {
 export type WorkspaceSnapshot = {
 	workspace?: string;
 	apps: WorkspaceSnapshotApp[];
+};
+
+export type ExecutorPolicyAction = 'approve' | 'require_approval' | 'block';
+export type ExecutorPolicyEnforcement = 'executor' | 'link' | 'executor-and-link';
+
+export type ExecutorPolicyConstraint = {
+	label: string;
+	anyOf: Array<{
+		path: string;
+		equals: string;
+	}>;
+};
+
+export type ExecutorPolicyRule = {
+	pattern: string;
+	action: ExecutorPolicyAction;
+	reason: string;
+	enforcement: ExecutorPolicyEnforcement;
+	surfaces: string[];
+	constraints: ExecutorPolicyConstraint[];
+};
+
+export type ExecutorPolicyPlan = {
+	schemaVersion: 1;
+	source: 'mere.link.yaml';
+	scopeId: string | null;
+	rules: ExecutorPolicyRule[];
+};
+
+export type ExecutorSource = JsonRecord & {
+	id?: unknown;
+	name?: unknown;
+	kind?: unknown;
+	url?: unknown;
+};
+
+export type ExecutorTool = JsonRecord & {
+	id?: unknown;
+	pluginId?: unknown;
+	sourceId?: unknown;
+	name?: unknown;
+	description?: unknown;
+};
+
+export type ExecutorToolDescription = JsonRecord & {
+	id?: unknown;
+	inputSchema?: unknown;
+	outputSchema?: unknown;
+};
+
+export type ExecutorPolicy = JsonRecord & {
+	id?: unknown;
+	scopeId?: unknown;
+	pattern?: unknown;
+	action?: unknown;
 };

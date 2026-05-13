@@ -1,2 +1,8 @@
 MereKit Link
 Copyright Sawfwair
+
+Executor integration support is designed to use Rhys Sullivan's Executor
+project through a narrow runtime boundary. Executor is MIT licensed. If
+Executor code is vendored, forked, or bundled with this package in the
+future, preserve the upstream MIT copyright and permission notice with the
+distributed artifact.

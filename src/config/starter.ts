@@ -9,7 +9,8 @@ export function starterConfig(input: { workspace?: string; name?: string } = {})
 		schemaVersion: 1,
 		integrations: {
 			mere: { plugin: 'mere', workspace },
-			github: { plugin: 'github-cli' },
+			executor: { plugin: 'executor' },
+			github: { plugin: 'executor', namespace: 'github' },
 			url: { plugin: 'url' }
 		},
 		entities: {

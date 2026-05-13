@@ -14,7 +14,13 @@ When a configured Mere project record already exists, Link updates only sync att
 
 ## Typed Runtime Boundaries
 
-External data enters through runtime boundary modules: JSON in `src/runtime/json.ts`, YAML in `src/runtime/yaml.ts`, and `mere` subprocess calls in `src/runtime/mere.ts`. ESLint bans those APIs elsewhere so parsing and error normalization stay centralized.
+External data enters through runtime boundary modules: JSON in `src/runtime/json.ts`, YAML in `src/runtime/yaml.ts`, `mere` subprocess calls in `src/runtime/mere.ts`, and Executor HTTP calls in `src/runtime/executor.ts`. ESLint bans raw JSON/YAML/subprocess APIs elsewhere so parsing and error normalization stay centralized.
+
+## Executor As Runtime Boundary
+
+Link is the source of truth for declared surfaces and write intent; Executor is the tool runtime and enforcement point. Product integrations use `plugin: executor` plus a namespace, while Link keeps project identity, URL materialization, and policy compilation deterministic.
+
+Executor policy is intentionally compiled from `mere.link.yaml`. Reads are approved for declared namespaces, known writes are blocked unless a declared surface grants `policy.writes: [sync]`, and Link still requires `--apply` plus resource-argument matching before invoking a write-capable tool.
 
 ## TypeScript Pinning
 

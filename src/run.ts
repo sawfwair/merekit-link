@@ -6,8 +6,17 @@ import { buildContext, entityRows, normalizeConfig, projectRows, summarize, surf
 import { configFromWorkspaceSnapshot, starterConfig } from './config/starter.js';
 import { HELP_TEXT, VERSION, manifest, renderCompletion } from './manifest.js';
 import { boolFlag, parseArgs, stringFlag } from './runtime/args.js';
+import {
+	applyExecutorPolicy,
+	describeExecutorTool,
+	invokeExecutorTool,
+	listExecutorSources,
+	searchExecutorTools
+} from './runtime/executor.js';
+import { parseJsonRecord } from './runtime/json.js';
 import { readSnapshot } from './runtime/mere.js';
 import { printTable, writeJson, writeText } from './runtime/output.js';
+import { assertExecutorInvocationAllowed, compileExecutorPolicy } from './sync/executor-policy.js';
 import { applyProjectsSyncPlan, buildProjectsSyncPlan } from './sync/projects.js';
 import type { JsonRecord } from './domain/types.js';
 
@@ -115,6 +124,73 @@ async function handleSyncProjects(rest: string[], flags: ReturnType<typeof parse
 	return 0;
 }
 
+function dataFlag(flags: ReturnType<typeof parseArgs>['flags']): JsonRecord {
+	const raw = stringFlag(flags, 'data');
+	return raw ? parseJsonRecord(raw, '--data') : {};
+}
+
+async function handleExecutorCommands(action: string | undefined, rest: string[], flags: ReturnType<typeof parseArgs>['flags']): Promise<number | null> {
+	if (action === 'sources') {
+		const sources = await listExecutorSources(flags);
+		if (boolFlag(flags, 'json')) writeJson(sources);
+		else printTable(sources, ['id', 'name', 'kind', 'url']);
+		return 0;
+	}
+	if (action === 'tools' && rest[0] === 'search') {
+		const query = rest.slice(1).join(' ');
+		if (!query) throw new Error('Usage: mere-link executor tools search <query>');
+		const result = await searchExecutorTools(flags, query);
+		if (boolFlag(flags, 'json')) writeJson(result);
+		else printTable((result.tools as JsonRecord[] | undefined) ?? [], ['id', 'pluginId', 'sourceId', 'name', 'description']);
+		return 0;
+	}
+	if (action === 'tools' && rest[0] === 'describe') {
+		const toolId = rest[1];
+		if (!toolId) throw new Error('Usage: mere-link executor tools describe <tool-id>');
+		const result = await describeExecutorTool(flags, toolId);
+		writeJson(result);
+		return 0;
+	}
+	if (action === 'policy' && rest[0] === 'compile') {
+		const { config } = await loadConfig(flags);
+		const plan = compileExecutorPolicy(config, stringFlag(flags, 'executor-scope') ?? null);
+		if (boolFlag(flags, 'json')) writeJson(plan);
+		else printTable(plan.rules.map((rule) => ({
+			pattern: rule.pattern,
+			action: rule.action,
+			enforcement: rule.enforcement,
+			surfaces: rule.surfaces.join(', ')
+		})), ['pattern', 'action', 'enforcement', 'surfaces']);
+		return 0;
+	}
+	if (action === 'policy' && rest[0] === 'apply') {
+		if (!boolFlag(flags, 'yes')) throw new Error('Executor policy apply requires --yes after reviewing compile output.');
+		const { config } = await loadConfig(flags);
+		const plan = compileExecutorPolicy(config, stringFlag(flags, 'executor-scope') ?? null);
+		const result = await applyExecutorPolicy(flags, config, plan);
+		if (boolFlag(flags, 'json')) writeJson({ plan, result });
+		else {
+			const scopeId = typeof result.scopeId === 'string' ? result.scopeId : 'default';
+			writeText(`Applied Executor policy to scope ${scopeId}.`);
+			printTable((result.created as JsonRecord[] | undefined) ?? [], ['id', 'pattern', 'action']);
+		}
+		return 0;
+	}
+	if (action === 'invoke') {
+		const mode = rest[0];
+		const toolId = rest[1];
+		if (mode !== 'read' && mode !== 'write') throw new Error('Usage: mere-link executor invoke read|write <tool-id> [--data JSON]');
+		if (!toolId) throw new Error('Usage: mere-link executor invoke read|write <tool-id> [--data JSON]');
+		const { config } = await loadConfig(flags);
+		const args = dataFlag(flags);
+		assertExecutorInvocationAllowed(config, mode, toolId, args, boolFlag(flags, 'apply'));
+		const result = await invokeExecutorTool(flags, config, toolId, args);
+		writeJson(result);
+		return 0;
+	}
+	return null;
+}
+
 export async function main(argv: string[]): Promise<number> {
 	const { positionals, flags } = parseArgs(argv);
 	const [group, action, ...rest] = positionals;
@@ -144,11 +220,16 @@ export async function main(argv: string[]): Promise<number> {
 	if (listResult !== null) return listResult;
 	if (group === 'context' && action === 'inspect') return handleContextInspect(rest, flags);
 	if (group === 'sync' && action === 'projects') return handleSyncProjects(rest, flags);
+	if (group === 'executor') {
+		const handled = await handleExecutorCommands(action, rest, flags);
+		if (handled !== null) return handled;
+	}
 	throw new Error('Unknown command. Run "mere-link --help".');
 }
 
 export {
 	buildContext,
+	compileExecutorPolicy,
 	configFromWorkspaceSnapshot,
 	manifest,
 	normalizeConfig,
