@@ -61,6 +61,8 @@ Policy can be declared at the root, entity, or project level. Entity policy inhe
 
 Explicit deny rules win over allow rules. If no rule matches and `defaultEffect` is `deny`, the capability is denied.
 
+When policy is configured, command paths that export context, plan/apply sync, or invoke Executor tools enforce the matching capability before proceeding.
+
 ## Override
 
 `--override` marks one reviewed operation as allowed. It should only be used after human approval and leaves the decision visible in JSON output.

@@ -12,10 +12,16 @@ import type {
 
 type SurfaceEntry = {
 	path: string;
+	entityKey: string;
+	projectKey: string;
 	role: string;
 	integration: IntegrationConfig;
 	surface: SurfaceConfig;
 	namespace: string;
+};
+
+export type ExecutorInvocationAuthorization = {
+	targets: Array<{ entity: string; project: string; surface: string }>;
 };
 
 const EXECUTOR_WRITE_PATTERNS: Record<string, string[]> = {
@@ -133,7 +139,7 @@ function executorSurfaceEntries(config: LinkConfigFile): SurfaceEntry[] {
 				if (!integration) continue;
 				const namespace = executorNamespaceForIntegration(surface.integration, integration);
 				if (!namespace) continue;
-				entries.push({ path: `${entityKey}/${projectKey}:${role}`, role, integration, surface, namespace });
+				entries.push({ path: `${entityKey}/${projectKey}:${role}`, entityKey, projectKey, role, integration, surface, namespace });
 			}
 		}
 	}
@@ -203,6 +209,10 @@ function executorWritePatternsForSurfacePolicy(namespace: string, surface: Surfa
 	return [...new Set(writes.flatMap((write) => byWrite[write] ?? []))];
 }
 
+function broadPolicySurface(entry: SurfaceEntry): boolean {
+	return entry.surface.kind === 'tool' || entry.surface.kind === 'namespace' || entry.surface.kind === 'source';
+}
+
 function allExecutorWritePatternsForEntry(entry: SurfaceEntry): string[] {
 	if (entry.surface.kind === 'tool') return [entry.surface.id];
 	return EXECUTOR_WRITE_PATTERNS[entry.namespace] ?? [];
@@ -231,7 +241,10 @@ export function compileExecutorPolicy(config: LinkConfigFile, scopeId: string | 
 
 		const writePatterns = [...new Set(namespaceEntries.flatMap(allExecutorWritePatternsForEntry))];
 		for (const pattern of writePatterns) {
-			const writableEntries = namespaceEntries.filter((entry) => executorWritePatternsForSurfacePolicy(namespace, entry.surface).includes(pattern));
+			const writableEntries = namespaceEntries.filter((entry) => (
+				executorWritePatternsForSurfacePolicy(namespace, entry.surface).includes(pattern) &&
+				(Boolean(resourceGuard(entry)) || broadPolicySurface(entry))
+			));
 			const resourceGuards = writableEntries.map(resourceGuard).filter((guard): guard is ResourceGuard => Boolean(guard));
 			const allowed = writableEntries.length > 0;
 			rules.set(`${allowed ? 'require_approval' : 'block'}:${pattern}`, {
@@ -293,20 +306,63 @@ function resourceGuardMatches(args: JsonRecord, guard: ResourceGuard): boolean {
 	return guard.anyOf.some((predicate) => argumentPredicateMatches(args, predicate));
 }
 
+function broadInvocationSurface(entry: SurfaceEntry, toolId: string): boolean {
+	if (entry.surface.kind === 'tool') return toolPatternMatches(entry.surface.id, toolId);
+	return entry.surface.kind === 'namespace' || entry.surface.kind === 'source';
+}
+
+function guardedEntryMatches(entry: SurfaceEntry, toolId: string, args: JsonRecord): boolean {
+	const guard = resourceGuard(entry);
+	if (guard) return resourceGuardMatches(args, guard);
+	return broadInvocationSurface(entry, toolId);
+}
+
+function targetForEntry(entry: SurfaceEntry): ExecutorInvocationAuthorization['targets'][number] {
+	return { entity: entry.entityKey, project: entry.projectKey, surface: entry.path };
+}
+
+function uniqueTargets(entries: SurfaceEntry[]): ExecutorInvocationAuthorization {
+	const targets = new Map<string, ExecutorInvocationAuthorization['targets'][number]>();
+	for (const entry of entries) targets.set(entry.path, targetForEntry(entry));
+	return { targets: [...targets.values()] };
+}
+
 function ruleResourceMatches(args: JsonRecord, rule: ExecutorPolicyRule): boolean {
 	if (rule.resourceGuards.length === 0) return true;
 	return rule.resourceGuards.some((guard) => resourceGuardMatches(args, guard));
 }
 
-function namespaceDeclared(config: LinkConfigFile, toolId: string): boolean {
-	const namespace = toolId.split('.')[0] ?? '';
-	return executorSurfaceEntries(config).some((entry) => entry.namespace === namespace || (entry.surface.kind === 'tool' && entry.surface.id === toolId));
+function namespaceForTool(toolId: string): string {
+	return toolId.split('.')[0] ?? '';
 }
 
-export function assertExecutorInvocationAllowed(config: LinkConfigFile, mode: 'read' | 'write', toolId: string, args: JsonRecord, apply: boolean): void {
+function entriesForTool(config: LinkConfigFile, toolId: string): SurfaceEntry[] {
+	const namespace = namespaceForTool(toolId);
+	return executorSurfaceEntries(config).filter((entry) => entry.namespace === namespace || (entry.surface.kind === 'tool' && toolPatternMatches(entry.surface.id, toolId)));
+}
+
+function readableEntries(config: LinkConfigFile, toolId: string, args: JsonRecord): SurfaceEntry[] {
+	const namespace = toolId.split('.')[0] ?? '';
+	return executorSurfaceEntries(config).filter((entry) => {
+		if (entry.surface.kind === 'tool') return toolPatternMatches(entry.surface.id, toolId);
+		return entry.namespace === namespace && guardedEntryMatches(entry, toolId, args);
+	});
+}
+
+function writableEntries(config: LinkConfigFile, toolId: string, args: JsonRecord): SurfaceEntry[] {
+	return entriesForTool(config, toolId).filter((entry) => (
+		executorWritePatternsForSurfacePolicy(entry.namespace, entry.surface).some((pattern) => toolPatternMatches(pattern, toolId)) &&
+		guardedEntryMatches(entry, toolId, args)
+	));
+}
+
+export function assertExecutorInvocationAllowed(config: LinkConfigFile, mode: 'read' | 'write', toolId: string, args: JsonRecord, apply: boolean): ExecutorInvocationAuthorization {
 	if (mode === 'read') {
-		if (!namespaceDeclared(config, toolId)) throw new Error(`Executor read denied. No declared Link surface grants namespace for ${toolId}.`);
-		return;
+		const candidates = entriesForTool(config, toolId);
+		if (candidates.length === 0) throw new Error(`Executor read denied. No declared Link surface grants namespace for ${toolId}.`);
+		const matches = readableEntries(config, toolId, args);
+		if (matches.length === 0) throw new Error(`Executor read denied. Arguments for ${toolId} do not match any declared readable Link surface.`);
+		return uniqueTargets(matches);
 	}
 	if (!apply) throw new Error('Executor write denied. Re-run with --apply after reviewing the plan.');
 	const plan = compileExecutorPolicy(config);
@@ -317,4 +373,7 @@ export function assertExecutorInvocationAllowed(config: LinkConfigFile, mode: 'r
 	if (!allowed.some((rule) => ruleResourceMatches(args, rule))) {
 		throw new Error(`Executor write denied. Arguments for ${toolId} do not match any declared writable Link surface.`);
 	}
+	const entries = writableEntries(config, toolId, args);
+	if (entries.length === 0) throw new Error(`Executor write denied. Arguments for ${toolId} do not match any declared writable Link surface.`);
+	return uniqueTargets(entries);
 }

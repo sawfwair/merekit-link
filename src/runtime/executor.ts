@@ -1,5 +1,5 @@
 import process from 'node:process';
-import { asArray, asRecord, isRecord } from '../domain/guards.js';
+import { asArray, asRecord } from '../domain/guards.js';
 import type {
 	ExecutorPolicy,
 	ExecutorPolicyPlan,
@@ -26,8 +26,19 @@ type ExecutorRequestOptions = {
 	body?: JsonRecord;
 };
 
+type BaseUrlSource = 'flag' | 'config' | 'env' | 'default';
+
 function normalizeBaseUrl(value: string): string {
 	return value.replace(/\/+$/u, '');
+}
+
+function localExecutorUrl(value: string): boolean {
+	try {
+		const url = new URL(value);
+		return ['localhost', '127.0.0.1', '[::1]', '::1'].includes(url.hostname);
+	} catch {
+		return false;
+	}
 }
 
 function firstExecutorIntegration(config: LinkConfigFile | undefined): IntegrationConfig | undefined {
@@ -35,16 +46,33 @@ function firstExecutorIntegration(config: LinkConfigFile | undefined): Integrati
 	return config.integrations.executor ?? Object.values(config.integrations).find((integration) => integration.plugin === 'executor' && Boolean(integration.baseUrl));
 }
 
+function executorBaseUrl(flags: Flags, integration: IntegrationConfig | undefined): { value: string; source: BaseUrlSource } {
+	const flagValue = stringFlag(flags, 'executor-base-url');
+	if (flagValue) return { value: flagValue, source: 'flag' };
+	if (integration?.baseUrl) return { value: integration.baseUrl, source: 'config' };
+	const envValue = process.env.MERE_LINK_EXECUTOR_BASE_URL?.trim();
+	if (envValue) return { value: envValue, source: 'env' };
+	return { value: 'http://localhost:4788', source: 'default' };
+}
+
+function executorToken(flags: Flags, integration: IntegrationConfig | undefined, baseUrl: string, baseUrlSource: BaseUrlSource): string | undefined {
+	const tokenEnv = stringFlag(flags, 'executor-token-env') ?? integration?.tokenEnv;
+	if (tokenEnv) return process.env[tokenEnv]?.trim() || undefined;
+	const token = process.env.MERE_LINK_EXECUTOR_TOKEN?.trim();
+	if (!token) return undefined;
+	if (baseUrlSource === 'config' && !localExecutorUrl(baseUrl)) {
+		throw new Error('Refusing to send MERE_LINK_EXECUTOR_TOKEN to a non-local Executor baseUrl from config. Declare tokenEnv on the Executor integration or pass --executor-token-env for that runtime.');
+	}
+	return token;
+}
+
 export function executorRuntime(flags: Flags, config?: LinkConfigFile): ExecutorRuntime {
 	const integration = firstExecutorIntegration(config);
-	const baseUrl = stringFlag(flags, 'executor-base-url')
-		?? integration?.baseUrl
-		?? process.env.MERE_LINK_EXECUTOR_BASE_URL?.trim()
-		?? 'http://localhost:4788';
-	const tokenEnv = stringFlag(flags, 'executor-token-env') ?? integration?.tokenEnv;
-	const token = tokenEnv ? process.env[tokenEnv]?.trim() : process.env.MERE_LINK_EXECUTOR_TOKEN?.trim();
+	const baseUrl = executorBaseUrl(flags, integration);
+	const normalizedBaseUrl = normalizeBaseUrl(baseUrl.value);
+	const token = executorToken(flags, integration, normalizedBaseUrl, baseUrl.source);
 	return {
-		baseUrl: normalizeBaseUrl(baseUrl),
+		baseUrl: normalizedBaseUrl,
 		...(token ? { token } : {}),
 		...(stringFlag(flags, 'executor-scope') ? { scopeId: stringFlag(flags, 'executor-scope') } : {})
 	};
@@ -91,14 +119,80 @@ function scopedPath(scopeId: string, suffix: string): string {
 	return `/api/scopes/${encodeURIComponent(scopeId)}${suffix}`;
 }
 
+function readRequiredResponseString(record: JsonRecord, key: string, label: string): string {
+	const value = record[key];
+	if (typeof value !== 'string' || !value.trim()) throw new Error(`${label}.${key} is required.`);
+	return value.trim();
+}
+
+function readOptionalResponseString(record: JsonRecord, key: string, label: string): string | undefined {
+	const value = record[key];
+	if (value === undefined || value === null) return undefined;
+	if (typeof value !== 'string') throw new Error(`${label}.${key} must be a string.`);
+	return value.trim() ? value.trim() : undefined;
+}
+
+function decodeResponseArray<T>(value: unknown, label: string, decode: (item: unknown, itemLabel: string) => T): T[] {
+	return asArray(value, label).map((item, index) => decode(item, `${label}[${index}]`));
+}
+
+function decodeExecutorSource(value: unknown, label: string): ExecutorSource {
+	const record = asRecord(value, label);
+	const name = readOptionalResponseString(record, 'name', label);
+	const kind = readOptionalResponseString(record, 'kind', label);
+	const url = readOptionalResponseString(record, 'url', label);
+	return {
+		...record,
+		id: readRequiredResponseString(record, 'id', label),
+		...(name ? { name } : {}),
+		...(kind ? { kind } : {}),
+		...(url ? { url } : {})
+	};
+}
+
+function decodeExecutorTool(value: unknown, label: string): ExecutorTool {
+	const record = asRecord(value, label);
+	const pluginId = readOptionalResponseString(record, 'pluginId', label);
+	const sourceId = readOptionalResponseString(record, 'sourceId', label);
+	const name = readOptionalResponseString(record, 'name', label);
+	const description = readOptionalResponseString(record, 'description', label);
+	return {
+		...record,
+		id: readRequiredResponseString(record, 'id', label),
+		...(pluginId ? { pluginId } : {}),
+		...(sourceId ? { sourceId } : {}),
+		...(name ? { name } : {}),
+		...(description ? { description } : {})
+	};
+}
+
+function decodeExecutorToolDescription(value: unknown, label: string): ExecutorToolDescription {
+	const record = asRecord(value, label);
+	if (record.id !== undefined && record.id !== null) readOptionalResponseString(record, 'id', label);
+	return record;
+}
+
+function decodeExecutorPolicy(value: unknown, label: string): ExecutorPolicy {
+	const record = asRecord(value, label);
+	const id = readOptionalResponseString(record, 'id', label);
+	const scopeId = readOptionalResponseString(record, 'scopeId', label);
+	return {
+		...record,
+		...(id ? { id } : {}),
+		...(scopeId ? { scopeId } : {}),
+		pattern: readRequiredResponseString(record, 'pattern', label),
+		action: readRequiredResponseString(record, 'action', label)
+	};
+}
+
 export async function listExecutorSources(flags: Flags, config?: LinkConfigFile): Promise<ExecutorSource[]> {
 	const runtime = await runtimeWithScope(flags, config);
-	return asArray(await requestJson(runtime, scopedPath(runtime.scopeId, '/sources')), 'Executor sources').filter(isRecord) as ExecutorSource[];
+	return decodeResponseArray(await requestJson(runtime, scopedPath(runtime.scopeId, '/sources')), 'Executor sources', decodeExecutorSource);
 }
 
 export async function listExecutorTools(flags: Flags, config?: LinkConfigFile): Promise<ExecutorTool[]> {
 	const runtime = await runtimeWithScope(flags, config);
-	return asArray(await requestJson(runtime, scopedPath(runtime.scopeId, '/tools')), 'Executor tools').filter(isRecord) as ExecutorTool[];
+	return decodeResponseArray(await requestJson(runtime, scopedPath(runtime.scopeId, '/tools')), 'Executor tools', decodeExecutorTool);
 }
 
 function text(value: unknown): string {
@@ -122,10 +216,10 @@ export async function searchExecutorTools(flags: Flags, query: string, config?: 
 
 export async function describeExecutorTool(flags: Flags, toolId: string, config?: LinkConfigFile): Promise<JsonRecord> {
 	const runtime = await runtimeWithScope(flags, config);
-	const schema = asRecord(
+	const schema = decodeExecutorToolDescription(
 		await requestJson(runtime, scopedPath(runtime.scopeId, `/tools/${encodeURIComponent(toolId)}/schema`)),
 		'Executor tool schema'
-	) as ExecutorToolDescription;
+	);
 	const metadata = (await listExecutorTools(flags, config)).find((tool) => tool.id === toolId);
 	return {
 		tool: metadata ?? { id: toolId },
@@ -135,7 +229,7 @@ export async function describeExecutorTool(flags: Flags, toolId: string, config?
 
 export async function listExecutorPolicies(flags: Flags, config?: LinkConfigFile): Promise<ExecutorPolicy[]> {
 	const runtime = await runtimeWithScope(flags, config);
-	return asArray(await requestJson(runtime, scopedPath(runtime.scopeId, '/policies')), 'Executor policies').filter(isRecord) as ExecutorPolicy[];
+	return decodeResponseArray(await requestJson(runtime, scopedPath(runtime.scopeId, '/policies')), 'Executor policies', decodeExecutorPolicy);
 }
 
 function policyIdentity(policy: ExecutorPolicy): string {
@@ -146,9 +240,30 @@ function executorPolicyRules(plan: ExecutorPolicyPlan): ExecutorPolicyRule[] {
 	return plan.rules.filter((rule) => rule.enforcement === 'executor' || rule.enforcement === 'executor-and-link');
 }
 
+function conflictingPolicies(existing: ExecutorPolicy[], plan: ExecutorPolicyPlan): ExecutorPolicy[] {
+	const plannedActions = new Map<string, Set<string>>();
+	for (const rule of executorPolicyRules(plan)) {
+		const actions = plannedActions.get(rule.pattern) ?? new Set<string>();
+		actions.add(rule.action);
+		plannedActions.set(rule.pattern, actions);
+	}
+	return existing.filter((policy) => {
+		if (typeof policy.pattern !== 'string' || typeof policy.action !== 'string') return false;
+		const actions = plannedActions.get(policy.pattern);
+		return Boolean(actions) && !actions?.has(policy.action);
+	});
+}
+
 export async function applyExecutorPolicy(flags: Flags, config: LinkConfigFile, plan: ExecutorPolicyPlan): Promise<JsonRecord> {
 	const runtime = await runtimeWithScope(flags, config);
 	const existing = await listExecutorPolicies(flags, config);
+	const conflicts = conflictingPolicies(existing, plan);
+	if (conflicts.length > 0) {
+		const detail = conflicts
+			.map((policy) => `${String(policy.pattern)} currently ${String(policy.action)}`)
+			.join('; ');
+		throw new Error(`Executor policy apply refused because existing runtime policies conflict with compiled Link policy: ${detail}. Remove stale runtime policies and re-run apply.`);
+	}
 	const existingIdentities = new Set(existing.map(policyIdentity));
 	const created: JsonRecord[] = [];
 	const skipped: JsonRecord[] = [];
@@ -159,7 +274,7 @@ export async function applyExecutorPolicy(flags: Flags, config: LinkConfigFile, 
 			skipped.push({ pattern: rule.pattern, action: rule.action, reason: 'already-exists' });
 			continue;
 		}
-		const result = asRecord(await requestJson(runtime, scopedPath(runtime.scopeId, '/policies'), {
+		const result = decodeExecutorPolicy(await requestJson(runtime, scopedPath(runtime.scopeId, '/policies'), {
 			method: 'POST',
 			body: {
 				targetScope: runtime.scopeId,

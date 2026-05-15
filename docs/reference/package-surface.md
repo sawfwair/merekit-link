@@ -14,6 +14,8 @@
 
 The installed-package smoke verifies that the symlinked npm binary runs `--version`, emits the command manifest, and renders shell completion.
 
+Publishing is handled by the `Publish` GitHub Actions workflow. It runs `pnpm release:check`, publishes with npm provenance through Trusted Publishing, and creates the matching GitHub Release after a successful npm publish.
+
 ## Bundled Entry Point
 
 `@merekit/cli` bundles Link as an app adapter, so installed root-CLI users can run the same behavior through `mere link ...`.

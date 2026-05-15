@@ -93,7 +93,15 @@ type OperatorPolicyResult = {
 type FakeExecutorCall = {
 	method: string;
 	path: string;
+	authorization: string | null;
 	data: Record<string, unknown> | null;
+};
+
+type FakeExecutorOptions = {
+	sources?: unknown;
+	tools?: unknown;
+	policies?: unknown;
+	toolSchema?: unknown;
 };
 
 type FakeMereCall = {
@@ -179,7 +187,7 @@ function writeResponse(res: ServerResponse, status: number, value: unknown): voi
 	res.end(JSON.stringify(value));
 }
 
-async function startFakeExecutor(): Promise<{ baseUrl: string; calls: FakeExecutorCall[]; close: () => Promise<void> }> {
+async function startFakeExecutor(options: FakeExecutorOptions = {}): Promise<{ baseUrl: string; calls: FakeExecutorCall[]; close: () => Promise<void> }> {
 	const calls: FakeExecutorCall[] = [];
 	const policies: Array<{ id: string; scopeId: string; pattern: string; action: string; position: string; createdAt: number; updatedAt: number }> = [
 		{ id: 'pol_existing', scopeId: 'scope_default', pattern: 'monday.*', action: 'approve', position: 'a0', createdAt: 1, updatedAt: 1 }
@@ -188,28 +196,28 @@ async function startFakeExecutor(): Promise<{ baseUrl: string; calls: FakeExecut
 		void (async () => {
 			const url = new URL(req.url ?? '/', 'http://127.0.0.1');
 			const data = await readRequestJson(req);
-			calls.push({ method: req.method ?? 'GET', path: url.pathname, data });
+			calls.push({ method: req.method ?? 'GET', path: url.pathname, authorization: req.headers.authorization ?? null, data });
 			if (req.method === 'GET' && url.pathname === '/api/scope') {
 				writeResponse(res, 200, { id: 'scope_default', name: 'Default', dir: process.cwd(), stack: [] });
 				return;
 			}
 			if (req.method === 'GET' && url.pathname === '/api/scopes/scope_default/sources') {
-				writeResponse(res, 200, [{ id: 'src_monday', name: 'Monday', kind: 'monday', url: 'https://monday.com' }]);
+				writeResponse(res, 200, options.sources ?? [{ id: 'src_monday', name: 'Monday', kind: 'monday', url: 'https://monday.com' }]);
 				return;
 			}
 			if (req.method === 'GET' && url.pathname === '/api/scopes/scope_default/tools') {
-				writeResponse(res, 200, [
+				writeResponse(res, 200, options.tools ?? [
 					{ id: 'monday.items.update', pluginId: 'monday', sourceId: 'src_monday', name: 'Update item', description: 'Update a Monday item' },
 					{ id: 'sharepoint.files.upload', pluginId: 'sharepoint', sourceId: 'src_sharepoint', name: 'Upload file', description: 'Upload a SharePoint file' }
 				]);
 				return;
 			}
 			if (req.method === 'GET' && url.pathname === '/api/scopes/scope_default/tools/monday.items.update/schema') {
-				writeResponse(res, 200, { id: 'monday.items.update', inputSchema: { type: 'object', required: ['boardId'] } });
+				writeResponse(res, 200, options.toolSchema ?? { id: 'monday.items.update', inputSchema: { type: 'object', required: ['boardId'] } });
 				return;
 			}
 			if (req.method === 'GET' && url.pathname === '/api/scopes/scope_default/policies') {
-				writeResponse(res, 200, policies);
+				writeResponse(res, 200, options.policies ?? policies);
 				return;
 			}
 			if (req.method === 'POST' && url.pathname === '/api/scopes/scope_default/policies') {
@@ -334,11 +342,11 @@ entities:
           work:
             integration: monday
             kind: board
-            id: "18204749659"
+            id: "1234567890"
           discussion:
             integration: slack
             kind: channel
-            id: C0B2EAX4RQC
+            id: C012EXAMPLE
             policy:
               writes: [topic, purpose, canvas, bookmark, message, pin]
 `, 'utf8');
@@ -377,7 +385,7 @@ entities:
           planning:
             integration: monday
             kind: board
-            id: "18204749659"
+            id: "1234567890"
             policy:
               writes: [sync]
           docs:
@@ -399,7 +407,7 @@ entities:
 	assert.equal('constraints' in mondayUpdate, false);
 	assert.ok(
 		mondayUpdate.resourceGuards.some((guard) =>
-			guard.anyOf.some((predicate) => predicate.path === 'boardId' && predicate.operator === 'equals' && predicate.value === '18204749659')
+			guard.anyOf.some((predicate) => predicate.path === 'boardId' && predicate.operator === 'equals' && predicate.value === '1234567890')
 		)
 	);
 });
@@ -502,6 +510,68 @@ entities:
 	assert.ok(taxonomy.capabilities.includes('repo.code.write'));
 });
 
+test('enforces configured operator policy on context export and sync planning', async () => {
+	const dir = await tempDir();
+	const configPath = path.join(dir, 'mere.link.yaml');
+	await writeFile(configPath, `schemaVersion: 1
+operators:
+  approved-agent:
+    provider: managed-runtime
+    client: agent-shell
+    accountClass: org-managed
+    trustTier: approved
+  blocked-agent:
+    provider: managed-runtime
+    client: agent-shell
+    accountClass: org-managed
+    trustTier: blocked
+policy:
+  defaultEffect: deny
+  rules:
+    - id: allow-approved-agent
+      effect: allow
+      capabilities: [project.context.export, sync.plan]
+      providers: [managed-runtime]
+      clients: [agent-shell]
+      accountClasses: [org-managed]
+      trustTiers: [approved]
+integrations:
+  mere:
+    plugin: mere
+    workspace: ws_example
+entities:
+  example-org:
+    name: Example Organization
+    projects:
+      rollout:
+        name: Rollout
+        surfaces:
+          projects-app:
+            integration: mere
+            kind: app
+            id: projects
+            policy:
+              writes: [sync]
+          work:
+            integration: mere
+            kind: workspace
+            id: ws_example
+`, 'utf8');
+
+	const deniedContext = commandResult(['context', 'inspect', 'example-org', 'rollout', '--config', configPath, '--operator', 'blocked-agent', '--json']);
+	assert.notEqual(deniedContext.status, 0);
+	assert.match(deniedContext.stderr, /Operator policy denied/);
+
+	const deniedSync = commandResult(['sync', 'projects', 'example-org', 'rollout', '--config', configPath, '--operator', 'blocked-agent', '--json']);
+	assert.notEqual(deniedSync.status, 0);
+	assert.match(deniedSync.stderr, /Operator policy denied/);
+
+	const allowedContext = parseJson<ContextResult>(run(['context', 'inspect', 'example-org', 'rollout', '--config', configPath, '--operator', 'approved-agent', '--json']));
+	assert.equal(allowedContext.project.key, 'rollout');
+	const allowedSync = parseJson<ProjectsSyncPlanResult>(run(['sync', 'projects', 'example-org', 'rollout', '--config', configPath, '--operator', 'approved-agent', '--json']));
+	assert.equal(allowedSync.projectCount, 1);
+});
+
 test('plans Mere Projects materialization with explicit sync policy', async () => {
 	const dir = await tempDir();
 	const configPath = path.join(dir, 'mere.link.yaml');
@@ -545,11 +615,11 @@ entities:
           work:
             integration: monday
             kind: board
-            id: "18204749659"
+            id: "1234567890"
           discussion:
             integration: slack
             kind: channel
-            id: C0B2EAX4RQC
+            id: C012EXAMPLE
           code:
             integration: github
             kind: repo
@@ -564,7 +634,7 @@ entities:
 	assert.equal(plan.projectCount, 1);
 	assert.equal(plan.linkCount, 3);
 	assert.equal(plan.projects[0]?.payload.attributes.mereLinkKey, 'example-client/field-mapping');
-	assert.equal(plan.links.find((link) => link.role === 'work')?.url, 'https://monday.com/boards/18204749659');
+	assert.equal(plan.links.find((link) => link.role === 'work')?.url, 'https://monday.com/boards/1234567890');
 	assert.equal(plan.links.find((link) => link.role === 'discussion')?.kind, 'slack.channel');
 	assert.equal(plan.links.find((link) => link.role === 'code')?.kind, 'github.repo');
 });
@@ -605,7 +675,7 @@ entities:
           work:
             integration: monday
             kind: board
-            id: "18204749659"
+            id: "1234567890"
           docs:
             integration: sharepoint
             kind: site
@@ -614,7 +684,7 @@ entities:
 
 	const plan = parseJson<ProjectsSyncPlanResult>(run(['sync', 'projects', 'example-org', 'rollout', '--config', configPath, '--json']));
 	assert.equal(plan.linkCount, 2);
-	assert.equal(plan.links.find((link) => link.role === 'work')?.url, 'https://monday.com/boards/18204749659');
+	assert.equal(plan.links.find((link) => link.role === 'work')?.url, 'https://monday.com/boards/1234567890');
 	assert.equal(plan.links.find((link) => link.role === 'docs')?.url, 'https://example.sharepoint.com/sites/project');
 });
 
@@ -659,7 +729,7 @@ entities:
           work:
             integration: monday
             kind: board
-            id: "18204749659"
+            id: "1234567890"
 `, 'utf8');
 	await writeFile(fakeMerePath, `#!/usr/bin/env node
 import { appendFileSync } from 'node:fs';
@@ -724,7 +794,7 @@ entities:
           work:
             integration: monday
             kind: board
-            id: "18204749659"
+            id: "1234567890"
 `, 'utf8');
 
 	const result = commandResult(['sync', 'projects', '--config', configPath, '--json']);
@@ -755,7 +825,7 @@ entities:
           planning:
             integration: monday
             kind: board
-            id: "18204749659"
+            id: "1234567890"
             policy:
               writes: [sync]
 `, 'utf8');
@@ -784,12 +854,142 @@ entities:
 	}
 });
 
+test('refuses to forward the global Executor token to config-selected remote runtimes', async () => {
+	const dir = await tempDir();
+	const configPath = path.join(dir, 'mere.link.yaml');
+	await writeFile(configPath, `schemaVersion: 1
+integrations:
+  executor:
+    plugin: executor
+    baseUrl: https://executor.example.com
+entities: {}
+`, 'utf8');
+
+	const result = commandResult(['executor', 'sources', '--config', configPath, '--json'], {
+		env: { ...process.env, MERE_LINK_EXECUTOR_TOKEN: 'sentinel-secret-token' }
+	});
+	assert.notEqual(result.status, 0);
+	assert.match(result.stderr, /Refusing to send MERE_LINK_EXECUTOR_TOKEN/);
+});
+
+test('fails closed when runtime policies conflict with compiled Link policy', async () => {
+	const fake = await startFakeExecutor({
+		policies: [
+			{ id: 'pol_existing', scopeId: 'scope_default', pattern: 'monday.items.update', action: 'require_approval' }
+		]
+	});
+	try {
+		const dir = await tempDir();
+		const configPath = path.join(dir, 'mere.link.yaml');
+		await writeFile(configPath, `schemaVersion: 1
+integrations:
+  executor:
+    plugin: executor
+    baseUrl: ${fake.baseUrl}
+  monday:
+    plugin: executor
+    namespace: monday
+entities:
+  example-org:
+    projects:
+      rollout:
+        surfaces:
+          planning:
+            integration: monday
+            kind: board
+            id: "1234567890"
+`, 'utf8');
+
+		const result = await commandResultAsync(['executor', 'policy', 'apply', '--config', configPath, '--executor-base-url', fake.baseUrl, '--yes', '--json']);
+		assert.notEqual(result.status, 0);
+		assert.match(result.stderr, /existing runtime policies conflict/);
+		assert.equal(fake.calls.some((call) => call.method === 'POST' && call.path.endsWith('/policies')), false);
+	} finally {
+		await fake.close();
+	}
+});
+
+test('rejects malformed Executor runtime responses at the boundary', async () => {
+	const badSources = await startFakeExecutor({ sources: [{ name: 'Missing id' }] });
+	try {
+		const result = await commandResultAsync(['executor', 'sources', '--executor-base-url', badSources.baseUrl, '--json']);
+		assert.notEqual(result.status, 0);
+		assert.match(result.stderr, /Executor sources\[0\]\.id is required/);
+	} finally {
+		await badSources.close();
+	}
+
+	const badTools = await startFakeExecutor({ tools: [{ name: 'Missing id' }] });
+	try {
+		const result = await commandResultAsync(['executor', 'tools', 'search', 'monday', '--executor-base-url', badTools.baseUrl, '--json']);
+		assert.notEqual(result.status, 0);
+		assert.match(result.stderr, /Executor tools\[0\]\.id is required/);
+	} finally {
+		await badTools.close();
+	}
+
+	const badPolicies = await startFakeExecutor({ policies: [{ id: 'pol_bad', action: 'approve' }] });
+	try {
+		const dir = await tempDir();
+		const configPath = path.join(dir, 'mere.link.yaml');
+		await writeFile(configPath, `schemaVersion: 1
+integrations:
+  executor:
+    plugin: executor
+    baseUrl: ${badPolicies.baseUrl}
+  monday:
+    plugin: executor
+    namespace: monday
+entities:
+  example-org:
+    name: Example Organization
+    projects:
+      rollout:
+        name: Rollout
+        surfaces:
+          planning:
+            integration: monday
+            kind: board
+            id: "1234567890"
+            policy:
+              writes: [sync]
+`, 'utf8');
+
+		const result = await commandResultAsync(['executor', 'policy', 'apply', '--config', configPath, '--executor-base-url', badPolicies.baseUrl, '--yes', '--json']);
+		assert.notEqual(result.status, 0);
+		assert.match(result.stderr, /Executor policies\[0\]\.pattern is required/);
+	} finally {
+		await badPolicies.close();
+	}
+});
+
 test('guards Executor write invocation with Link policy, apply, and resource guards', async () => {
 	const fake = await startFakeExecutor();
 	try {
 		const dir = await tempDir();
 		const configPath = path.join(dir, 'mere.link.yaml');
 		await writeFile(configPath, `schemaVersion: 1
+operators:
+  approved-agent:
+    provider: managed-runtime
+    client: agent-shell
+    accountClass: org-managed
+    trustTier: approved
+  blocked-agent:
+    provider: managed-runtime
+    client: agent-shell
+    accountClass: org-managed
+    trustTier: blocked
+policy:
+  defaultEffect: deny
+  rules:
+    - id: allow-approved-agent
+      effect: allow
+      capabilities: [executor.tool.write]
+      providers: [managed-runtime]
+      clients: [agent-shell]
+      accountClasses: [org-managed]
+      trustTiers: [approved]
 integrations:
   executor:
     plugin: executor
@@ -807,23 +1007,88 @@ entities:
           planning:
             integration: monday
             kind: board
-            id: "18204749659"
+            id: "1234567890"
             policy:
               writes: [sync]
 `, 'utf8');
 
-		const noApply = commandResult(['executor', 'invoke', 'write', 'monday.items.update', '--config', configPath, '--executor-base-url', fake.baseUrl, '--data', '{"boardId":"18204749659"}', '--json']);
+		const noApply = commandResult(['executor', 'invoke', 'write', 'monday.items.update', '--config', configPath, '--executor-base-url', fake.baseUrl, '--data', '{"boardId":"1234567890"}', '--operator', 'approved-agent', '--json']);
 		assert.notEqual(noApply.status, 0);
 		assert.match(noApply.stderr, /--apply/);
 
-		const wrongBoard = commandResult(['executor', 'invoke', 'write', 'monday.items.update', '--config', configPath, '--executor-base-url', fake.baseUrl, '--data', '{"boardId":"wrong"}', '--apply', '--json']);
+		const wrongBoard = commandResult(['executor', 'invoke', 'write', 'monday.items.update', '--config', configPath, '--executor-base-url', fake.baseUrl, '--data', '{"boardId":"wrong"}', '--operator', 'approved-agent', '--apply', '--json']);
 		assert.notEqual(wrongBoard.status, 0);
 		assert.match(wrongBoard.stderr, /do not match/);
 
-		const allowed = parseJson<{ status: string; structured: { ok: boolean } }>(await runAsync(['executor', 'invoke', 'write', 'monday.items.update', '--config', configPath, '--executor-base-url', fake.baseUrl, '--data', '{"boardId":"18204749659"}', '--apply', '--json']));
+		const blockedOperator = commandResult(['executor', 'invoke', 'write', 'monday.items.update', '--config', configPath, '--executor-base-url', fake.baseUrl, '--data', '{"boardId":"1234567890"}', '--operator', 'blocked-agent', '--apply', '--json']);
+		assert.notEqual(blockedOperator.status, 0);
+		assert.match(blockedOperator.stderr, /Operator policy denied/);
+
+		const allowed = parseJson<{ status: string; structured: { ok: boolean } }>(await runAsync(['executor', 'invoke', 'write', 'monday.items.update', '--config', configPath, '--executor-base-url', fake.baseUrl, '--data', '{"boardId":"1234567890"}', '--operator', 'approved-agent', '--apply', '--json']));
 		assert.equal(allowed.status, 'completed');
 		assert.equal(allowed.structured.ok, true);
 		assert.ok(fake.calls.some((call) => call.method === 'POST' && call.path === '/api/executions'));
+	} finally {
+		await fake.close();
+	}
+});
+
+test('guards Executor read invocation with resource guards and operator policy', async () => {
+	const fake = await startFakeExecutor();
+	try {
+		const dir = await tempDir();
+		const configPath = path.join(dir, 'mere.link.yaml');
+		await writeFile(configPath, `schemaVersion: 1
+operators:
+  approved-agent:
+    provider: managed-runtime
+    client: agent-shell
+    accountClass: org-managed
+    trustTier: approved
+  blocked-agent:
+    provider: managed-runtime
+    client: agent-shell
+    accountClass: org-managed
+    trustTier: blocked
+policy:
+  defaultEffect: deny
+  rules:
+    - id: allow-approved-agent
+      effect: allow
+      capabilities: [executor.tool.read]
+      providers: [managed-runtime]
+      clients: [agent-shell]
+      accountClasses: [org-managed]
+      trustTiers: [approved]
+integrations:
+  executor:
+    plugin: executor
+    baseUrl: ${fake.baseUrl}
+  github:
+    plugin: executor
+    namespace: github
+entities:
+  example-org:
+    projects:
+      rollout:
+        surfaces:
+          code:
+            integration: github
+            kind: repo
+            id: allowed/repo
+`, 'utf8');
+
+		const wrongRepo = commandResult(['executor', 'invoke', 'read', 'github.issues.list', '--config', configPath, '--executor-base-url', fake.baseUrl, '--data', '{"repo":"other/private"}', '--operator', 'approved-agent', '--json']);
+		assert.notEqual(wrongRepo.status, 0);
+		assert.match(wrongRepo.stderr, /readable Link surface/);
+
+		const blockedOperator = commandResult(['executor', 'invoke', 'read', 'github.issues.list', '--config', configPath, '--executor-base-url', fake.baseUrl, '--data', '{"repo":"allowed/repo"}', '--operator', 'blocked-agent', '--json']);
+		assert.notEqual(blockedOperator.status, 0);
+		assert.match(blockedOperator.stderr, /Operator policy denied/);
+
+		const allowed = parseJson<{ status: string; structured: { ok: boolean } }>(await runAsync(['executor', 'invoke', 'read', 'github.issues.list', '--config', configPath, '--executor-base-url', fake.baseUrl, '--data', '{"repo":"allowed/repo"}', '--operator', 'approved-agent', '--json']));
+		assert.equal(allowed.status, 'completed');
+		assert.ok(fake.calls.some((call) => call.method === 'POST' && call.path === '/api/executions' && String(call.data?.code).includes('allowed/repo')));
 	} finally {
 		await fake.close();
 	}
@@ -996,7 +1261,7 @@ entities:
           work:
             integration: monday
             kind: board
-            id: "18204749659"
+            id: "1234567890"
 `, 'utf8');
 	await writeFile(fakeMerePath, `#!/usr/bin/env node
 console.log('not json');
@@ -1006,4 +1271,13 @@ console.log('not json');
 	const result = commandResult(['sync', 'projects', 'example-client', 'field-mapping', '--config', configPath, '--apply', '--mere-bin', fakeMerePath]);
 	assert.notEqual(result.status, 0);
 	assert.match(result.stderr, /must be valid JSON/);
+
+	await writeFile(fakeMerePath, `#!/usr/bin/env node
+console.log(JSON.stringify([{ id: 123, attributes: {} }]));
+`, 'utf8');
+	await chmod(fakeMerePath, 0o755);
+
+	const malformedList = commandResult(['sync', 'projects', 'example-client', 'field-mapping', '--config', configPath, '--apply', '--mere-bin', fakeMerePath]);
+	assert.notEqual(malformedList.status, 0);
+	assert.match(malformedList.stderr, /Mere Projects project list\[0\]\.id must be a string/);
 });

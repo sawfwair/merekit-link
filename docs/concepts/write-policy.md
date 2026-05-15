@@ -57,14 +57,14 @@ Existing Mere Projects records are linked without overwriting rich narrative fie
 
 ## Executor Writes Need Resource Matches
 
-Executor-backed writes require a declared surface, compiled Link policy, `--apply`, and matching resource arguments.
+Executor-backed reads and writes require a declared surface and matching resource arguments. Writes also require compiled Link policy and `--apply`.
 
 Compiled plans call these local checks `resourceGuards`. Each guard contains `ArgumentPredicate` entries such as `boardId equals <declared board>`, and Link accepts the invocation when a writable surface guard matches the supplied arguments.
 
 ```sh
 mere-link executor invoke write monday.items.update \
   --config mere.link.yaml \
-  --data '{"boardId":"18204749659"}' \
+  --data '{"boardId":"1234567890"}' \
   --apply \
   --json
 ```
@@ -73,7 +73,7 @@ If the board id does not match any declared writable Link surface, Link denies t
 
 ## Operator Policy Is A Preflight
 
-Surface write policy answers "is this resource allowed to be written?" Operator policy answers "is this operator allowed to use this capability for this project?"
+Surface policy answers "is this resource allowed for this tool call?" Operator policy answers "is this operator allowed to use this capability for this project?"
 
 ```sh
 mere-link policy evaluate example-client rollout \
@@ -82,4 +82,4 @@ mere-link policy evaluate example-client rollout \
   --json
 ```
 
-Use operator policy before exporting context, preparing sync payloads, or invoking runtime tools.
+When operator policy is configured, Link enforces it before exporting context, preparing or applying sync payloads, and invoking runtime tools.

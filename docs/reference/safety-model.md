@@ -7,10 +7,13 @@ MereKit Link treats declarative policy as higher authority than runtime affordan
 - `sync projects` is dry-run unless `--apply` is passed.
 - Mere Projects sync requires `policy.writes: [sync]` even for planning.
 - Existing Mere Projects narrative fields are not overwritten when a record is linked.
+- Configured operator policy is enforced before context export, sync plan/apply, and Executor tool invocation.
 - Executor policy is compiled from declared Link surfaces.
-- Executor writes require declared surfaces, matching resource arguments, and `--apply`.
+- Executor reads and writes require declared surfaces and matching resource arguments unless the config declares an explicit broad `namespace`, `source`, or exact `tool` surface.
+- Executor writes require compiled write policy and `--apply`.
 - Link resource guards are local `ArgumentPredicate` checks over invocation arguments.
 - Operator policy defaults to deny and explicit deny rules win over allows.
+- The global `MERE_LINK_EXECUTOR_TOKEN` is not sent to non-local Executor URLs selected by config.
 - JSON, YAML, subprocess, and Executor HTTP calls stay in `src/runtime/*`.
 
 ## Why Planning Needs Policy
@@ -25,6 +28,8 @@ Compiled Executor rules do two things:
 - block or require approval for known write patterns
 
 Writable resource surfaces also compile Link-side `resourceGuards`. Link checks those resource arguments locally before invoking write-capable tools.
+
+Policy apply fails closed when existing runtime policies conflict with the compiled Link policy. Remove stale runtime grants and re-run apply rather than relying on ambiguous runtime precedence.
 
 ## Failure Mode
 

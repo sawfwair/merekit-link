@@ -64,3 +64,5 @@ Or pass it at the command line:
 ```sh
 mere-link executor sources --executor-token-env EXAMPLE_EXECUTOR_TOKEN --json
 ```
+
+When a non-local Executor URL comes from `mere.link.yaml`, declare `tokenEnv` for that runtime. Link will not forward the global `MERE_LINK_EXECUTOR_TOKEN` to a non-local config URL.

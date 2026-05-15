@@ -3,10 +3,11 @@ import { realpathSync } from 'node:fs';
 import process from 'node:process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { loadConfig, writeConfigOutput } from './config/file.js';
-import { buildContext, entityRows, normalizeConfig, projectRows, summarize, surfaceRows } from './config/normalize.js';
+import { buildContext, entityRows, normalizeConfig, projectRows, selectSyncTargets, summarize, surfaceRows } from './config/normalize.js';
 import { configFromWorkspaceSnapshot, starterConfig } from './config/starter.js';
 import { HELP_TEXT, VERSION, manifest, renderCompletion } from './manifest.js';
 import {
+	OPERATOR_CAPABILITIES,
 	capabilitiesFromFlag,
 	evaluateOperatorPolicy,
 	formatOperator,
@@ -28,7 +29,7 @@ import { readSnapshot } from './runtime/mere.js';
 import { printTable, writeJson, writeText } from './runtime/output.js';
 import { assertExecutorInvocationAllowed, compileExecutorPolicy } from './sync/executor-policy.js';
 import { applyProjectsSyncPlan, buildProjectsSyncPlan } from './sync/projects.js';
-import type { JsonRecord } from './domain/types.js';
+import type { Flags, JsonRecord, LinkConfigFile } from './domain/types.js';
 
 async function handleConfigInit(flags: ReturnType<typeof parseArgs>['flags']): Promise<number> {
 	const config = starterConfig({ workspace: stringFlag(flags, 'workspace'), name: stringFlag(flags, 'name') });
@@ -98,6 +99,7 @@ async function handleContextInspect(rest: string[], flags: ReturnType<typeof par
 	const entity = rest[0];
 	if (!entity) throw new Error('Usage: mere-link context inspect <entity> [project] [--role ROLE]');
 	const { config } = await loadConfig(flags);
+	requireOperatorCapabilities(config, flags, entity, rest[1], [OPERATOR_CAPABILITIES.PROJECT_CONTEXT_EXPORT]);
 	const context = buildContext(config, entity, rest[1], stringFlag(flags, 'role'));
 	if (boolFlag(flags, 'json')) {
 		writeJson(context);
@@ -113,6 +115,10 @@ async function handleContextInspect(rest: string[], flags: ReturnType<typeof par
 
 async function handleSyncProjects(rest: string[], flags: ReturnType<typeof parseArgs>['flags']): Promise<number> {
 	const { config } = await loadConfig(flags);
+	const targets = selectSyncTargets(config, rest[0], rest[1]);
+	requireOperatorCapabilitiesForTargets(config, flags, targets.map((target) => ({ entity: target.entityKey, project: target.projectKey })), boolFlag(flags, 'apply')
+		? [OPERATOR_CAPABILITIES.SYNC_PLAN, OPERATOR_CAPABILITIES.SYNC_APPLY]
+		: [OPERATOR_CAPABILITIES.SYNC_PLAN]);
 	const plan = buildProjectsSyncPlan(config, flags, rest[0], rest[1]);
 	if (plan.apply) {
 		const result = applyProjectsSyncPlan(plan, flags);
@@ -213,9 +219,47 @@ function dataFlag(flags: ReturnType<typeof parseArgs>['flags']): JsonRecord {
 	return raw ? parseJsonRecord(raw, '--data') : {};
 }
 
+async function loadOptionalConfig(flags: Flags): Promise<LinkConfigFile | undefined> {
+	try {
+		return (await loadConfig(flags)).config;
+	} catch (error) {
+		if (error instanceof Error && error.message.startsWith('Config not found:') && !stringFlag(flags, 'config') && !process.env.MERE_LINK_CONFIG?.trim()) return undefined;
+		throw error;
+	}
+}
+
+function requireOperatorCapabilities(config: LinkConfigFile, flags: Flags, entityRef: string, projectRef: string | undefined, capabilities: string[]): void {
+	const operator = resolveOperatorIdentity(config, flags);
+	const { policy, decision } = evaluateOperatorPolicy({
+		config,
+		entityRef,
+		projectRef,
+		operator,
+		capabilities,
+		environment: stringFlag(flags, 'operator-environment'),
+		override: policyOverrideRequested(flags)
+	});
+	if (policy.source === 'default' && policy.rules.length === 0 && policy.notes.length === 0) return;
+	if (decision.allowed) return;
+	const denied = decision.capabilityDecisions
+		.filter((capabilityDecision) => !capabilityDecision.allowed)
+		.map((capabilityDecision) => `${capabilityDecision.capability}: ${capabilityDecision.reason}`)
+		.join('; ');
+	throw new Error(`Operator policy denied ${capabilities.join(', ')} for ${decision.entity}/${decision.project}: ${denied}`);
+}
+
+function requireOperatorCapabilitiesForTargets(config: LinkConfigFile, flags: Flags, targets: Array<{ entity: string; project: string }>, capabilities: string[]): void {
+	const uniqueTargets = new Map<string, { entity: string; project: string }>();
+	for (const target of targets) uniqueTargets.set(`${target.entity}/${target.project}`, target);
+	for (const target of uniqueTargets.values()) {
+		requireOperatorCapabilities(config, flags, target.entity, target.project, capabilities);
+	}
+}
+
 async function handleExecutorCommands(action: string | undefined, rest: string[], flags: ReturnType<typeof parseArgs>['flags']): Promise<number | null> {
 	if (action === 'sources') {
-		const sources = await listExecutorSources(flags);
+		const config = await loadOptionalConfig(flags);
+		const sources = await listExecutorSources(flags, config);
 		if (boolFlag(flags, 'json')) writeJson(sources);
 		else printTable(sources, ['id', 'name', 'kind', 'url']);
 		return 0;
@@ -223,7 +267,8 @@ async function handleExecutorCommands(action: string | undefined, rest: string[]
 	if (action === 'tools' && rest[0] === 'search') {
 		const query = rest.slice(1).join(' ');
 		if (!query) throw new Error('Usage: mere-link executor tools search <query>');
-		const result = await searchExecutorTools(flags, query);
+		const config = await loadOptionalConfig(flags);
+		const result = await searchExecutorTools(flags, query, config);
 		if (boolFlag(flags, 'json')) writeJson(result);
 		else printTable((result.tools as JsonRecord[] | undefined) ?? [], ['id', 'pluginId', 'sourceId', 'name', 'description']);
 		return 0;
@@ -231,7 +276,8 @@ async function handleExecutorCommands(action: string | undefined, rest: string[]
 	if (action === 'tools' && rest[0] === 'describe') {
 		const toolId = rest[1];
 		if (!toolId) throw new Error('Usage: mere-link executor tools describe <tool-id>');
-		const result = await describeExecutorTool(flags, toolId);
+		const config = await loadOptionalConfig(flags);
+		const result = await describeExecutorTool(flags, toolId, config);
 		writeJson(result);
 		return 0;
 	}
@@ -267,7 +313,8 @@ async function handleExecutorCommands(action: string | undefined, rest: string[]
 		if (!toolId) throw new Error('Usage: mere-link executor invoke read|write <tool-id> [--data JSON]');
 		const { config } = await loadConfig(flags);
 		const args = dataFlag(flags);
-		assertExecutorInvocationAllowed(config, mode, toolId, args, boolFlag(flags, 'apply'));
+		const authorization = assertExecutorInvocationAllowed(config, mode, toolId, args, boolFlag(flags, 'apply'));
+		requireOperatorCapabilitiesForTargets(config, flags, authorization.targets, [mode === 'read' ? OPERATOR_CAPABILITIES.EXECUTOR_TOOL_READ : OPERATOR_CAPABILITIES.EXECUTOR_TOOL_WRITE]);
 		const result = await invokeExecutorTool(flags, config, toolId, args);
 		writeJson(result);
 		return 0;

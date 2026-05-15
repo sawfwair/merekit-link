@@ -1,5 +1,5 @@
 MereKit Link
-Copyright MereKit contributors
+Copyright Sawfwair Inc. and MereKit contributors
 
 Executor integration support is designed to use compatible Executor runtimes
 through a narrow runtime boundary. If third-party Executor code is vendored,

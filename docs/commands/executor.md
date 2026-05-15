@@ -53,7 +53,7 @@ mere-link executor invoke read github.issues.list \
   --json
 ```
 
-Write invocation also requires `--apply` and matching resource arguments.
+Read invocation requires a declared surface and matching resource arguments unless the config declares an explicit broad `namespace`, `source`, or exact `tool` surface. Write invocation also requires `--apply`.
 
 ```sh
 mere-link executor invoke write github.issues.create \

@@ -20,7 +20,7 @@
   "bugs": {
     "url": "https://github.com/sawfwair/merekit-link/issues"
   },
-  "homepage": "https://github.com/sawfwair/merekit-link#readme",
+  "homepage": "https://sawfwair.github.io/merekit-link/",
   "keywords": [
     "agent",
     "cli",
@@ -53,6 +53,7 @@
     "prepare": "git rev-parse --git-dir >/dev/null 2>&1 && git config core.hooksPath .githooks || true",
     "hooks:install": "git config core.hooksPath .githooks",
     "prepack": "pnpm build",
+    "check:node": "tsx scripts/check-node-version.ts",
     "build": "tsc -p tsconfig.json && chmod 755 dist/run.js",
     "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "docs:dev": "vitepress dev docs",
@@ -63,7 +64,9 @@
     "coverage": "pnpm build && c8 --include='dist/**/*.js' --reporter=text --check-coverage --lines 80 --functions 80 --branches 70 tsx --test test/*.test.ts",
     "smoke": "pnpm build && node dist/run.js --version >/dev/null && node dist/run.js commands --json >/dev/null && node dist/run.js completion bash >/dev/null",
     "smoke:package": "pnpm build && tsx scripts/smoke-package.ts",
-    "verify": "pnpm lint && pnpm check && pnpm test && pnpm coverage && pnpm smoke && pnpm smoke:package && pnpm docs:build && npm pack --dry-run --ignore-scripts",
+    "verify": "pnpm check:node && pnpm lint && pnpm check && pnpm test && pnpm coverage && pnpm smoke && pnpm smoke:package && pnpm docs:build && npm pack --dry-run --ignore-scripts",
+    "release:check": "pnpm verify && pnpm audit --audit-level=low",
+    "prepublishOnly": "pnpm release:check",
     "pack:dry": "pnpm verify"
   },
   "dependencies": {
@@ -78,6 +81,12 @@
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.59.2",
     "vitepress": "1.6.4"
+  },
+  "pnpm": {
+    "overrides": {
+      "vite": "6.4.2",
+      "esbuild": "0.25.12"
+    }
   },
   "engines": {
     "node": ">=22 <26"
