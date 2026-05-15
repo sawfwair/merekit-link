@@ -36,6 +36,42 @@ export type PluginDefinition = {
 	writes: readonly string[];
 };
 
+export type OperatorPolicyEffect = 'allow' | 'deny';
+
+export type OperatorConfig = {
+	name?: string;
+	type?: string;
+	provider?: string;
+	client?: string;
+	accountClass?: string;
+	accountId?: string;
+	trustTier?: string;
+	environment?: string;
+	notes: string[];
+};
+
+export type OperatorPolicyRuleConfig = {
+	id?: string;
+	effect: OperatorPolicyEffect;
+	capabilities: string[];
+	operators?: string[];
+	operatorTypes?: string[];
+	providers?: string[];
+	clients?: string[];
+	accountClasses?: string[];
+	accountIds?: string[];
+	trustTiers?: string[];
+	environments?: string[];
+	reason?: string;
+};
+
+export type OperatorPolicyConfig = {
+	inherit?: boolean;
+	defaultEffect: OperatorPolicyEffect;
+	notes: string[];
+	rules: OperatorPolicyRuleConfig[];
+};
+
 export type IntegrationConfig = {
 	plugin: string;
 	workspace?: string;
@@ -60,12 +96,14 @@ export type SurfaceConfig = {
 export type ProjectConfig = {
 	name: string;
 	aliases: string[];
+	policy?: OperatorPolicyConfig;
 	surfaces: Record<string, SurfaceConfig>;
 };
 
 export type EntityConfig = {
 	name: string;
 	aliases: string[];
+	policy?: OperatorPolicyConfig;
 	projects: Record<string, ProjectConfig>;
 };
 
@@ -77,6 +115,8 @@ export type LinkConfig = {
 
 export type LinkConfigFile = {
 	schemaVersion: 1;
+	operators?: Record<string, OperatorConfig>;
+	policy?: OperatorPolicyConfig;
 	integrations: Record<string, IntegrationConfig>;
 	entities: Record<string, EntityConfig>;
 	links: LinkConfig[];
@@ -155,12 +195,17 @@ export type WorkspaceSnapshot = {
 export type ExecutorPolicyAction = 'approve' | 'require_approval' | 'block';
 export type ExecutorPolicyEnforcement = 'executor' | 'link' | 'executor-and-link';
 
-export type ExecutorPolicyConstraint = {
+export type ArgumentPredicateOperator = 'equals' | 'notEquals' | 'contains' | 'startsWith';
+
+export type ArgumentPredicate = {
+	path: string;
+	operator: ArgumentPredicateOperator;
+	value: string;
+};
+
+export type ResourceGuard = {
 	label: string;
-	anyOf: Array<{
-		path: string;
-		equals: string;
-	}>;
+	anyOf: ArgumentPredicate[];
 };
 
 export type ExecutorPolicyRule = {
@@ -169,7 +214,7 @@ export type ExecutorPolicyRule = {
 	reason: string;
 	enforcement: ExecutorPolicyEnforcement;
 	surfaces: string[];
-	constraints: ExecutorPolicyConstraint[];
+	resourceGuards: ResourceGuard[];
 };
 
 export type ExecutorPolicyPlan = {

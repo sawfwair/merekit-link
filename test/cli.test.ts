@@ -61,7 +61,10 @@ type ExecutorPolicyCompileResult = {
 		pattern: string;
 		action: string;
 		enforcement: string;
-		constraints: unknown[];
+		resourceGuards: Array<{
+			label: string;
+			anyOf: Array<{ path: string; operator: string; value: string }>;
+		}>;
 	}>;
 };
 
@@ -76,6 +79,15 @@ type ExecutorApplyResult = {
 type ExecutorSearchResult = {
 	count: number;
 	tools: Array<{ id: string }>;
+};
+
+type OperatorPolicyResult = {
+	policy: { defaultEffect: string; source: string };
+	decision: {
+		allowed: boolean;
+		operator: { key: string; provider: string; client: string; accountClass: string; trustTier: string };
+		capabilityDecisions: Array<{ capability: string; effect: string; matchedRule?: string; reason: string }>;
+	};
 };
 
 type FakeExecutorCall = {
@@ -247,16 +259,17 @@ test('prints a MereKit adapter manifest', () => {
 	const manifest = parseJson<ManifestResult>(run(['commands', '--json']));
 	assert.equal(manifest.namespace, 'link');
 	assert.equal(manifest.auth.kind, 'none');
-	assert.equal(manifest.commands.length, 18);
+	assert.equal(manifest.commands.length, 21);
 	assert.ok(manifest.commands.some((command) => command.id === 'generate.workspace'));
 	assert.ok(manifest.commands.some((command) => command.id === 'sync.projects'));
+	assert.ok(manifest.commands.some((command) => command.id === 'policy.evaluate'));
 	assert.ok(manifest.commands.some((command) => command.id === 'executor.policy.compile'));
 });
 
 test('initializes, validates, and resolves a starter config', async () => {
 	const dir = await tempDir();
 	const configPath = path.join(dir, 'mere.link.yaml');
-	run(['config', 'init', '--workspace', 'ws_123', '--name', 'Acme', '--output', configPath, '--yes']);
+	run(['config', 'init', '--workspace', 'ws_123', '--name', 'Example Org', '--output', configPath, '--yes']);
 
 	const yaml = await readFile(configPath, 'utf8');
 	assert.match(yaml, /plugin: mere/);
@@ -267,8 +280,8 @@ test('initializes, validates, and resolves a starter config', async () => {
 	assert.equal(validate.summary.entities, 1);
 	assert.deepEqual(validate.summary.roles, ['code', 'docs', 'work']);
 
-	const context = parseJson<ContextResult>(run(['context', 'inspect', 'acme', 'workspace', '--role', 'work', '--config', configPath, '--json']));
-	assert.equal(context.entity.key, 'acme');
+	const context = parseJson<ContextResult>(run(['context', 'inspect', 'example-org', 'workspace', '--role', 'work', '--config', configPath, '--json']));
+	assert.equal(context.entity.key, 'example-org');
 	assert.equal(context.project.key, 'workspace');
 	assert.equal(context.surface.plugin, 'mere');
 	assert.equal(context.surface.kind, 'workspace');
@@ -310,13 +323,13 @@ integrations:
   slack:
     plugin: executor
     namespace: slack
-    workspace: geoacuity
+    workspace: workspace-team
 entities:
-  geoacuity:
-    name: GeoAcuity
+  workspace-team:
+    name: Workspace Team
     projects:
-      egis:
-        name: eGIS
+      field-mapping:
+        name: Field Mapping
         surfaces:
           work:
             integration: monday
@@ -330,7 +343,7 @@ entities:
               writes: [topic, purpose, canvas, bookmark, message, pin]
 `, 'utf8');
 
-	const context = parseJson<ContextResult>(run(['context', 'inspect', 'geoacuity', 'egis', '--role', 'work', '--config', configPath, '--json']));
+	const context = parseJson<ContextResult>(run(['context', 'inspect', 'workspace-team', 'field-mapping', '--role', 'work', '--config', configPath, '--json']));
 	assert.equal(context.surface.plugin, 'executor');
 	assert.equal(context.surface.kind, 'board');
 
@@ -355,8 +368,8 @@ integrations:
     plugin: executor
     namespace: sharepoint
 entities:
-  acme:
-    name: Acme
+  example-org:
+    name: Example Organization
     projects:
       rollout:
         name: Rollout
@@ -370,10 +383,10 @@ entities:
           docs:
             integration: sharepoint
             kind: site
-            id: sawfwair.sharepoint.com/sites/acme
+            id: example.sharepoint.com/sites/project
 `, 'utf8');
 
-	const context = parseJson<ContextResult>(run(['context', 'inspect', 'acme', 'rollout', '--role', 'docs', '--config', configPath, '--json']));
+	const context = parseJson<ContextResult>(run(['context', 'inspect', 'example-org', 'rollout', '--role', 'docs', '--config', configPath, '--json']));
 	assert.equal(context.surface.plugin, 'executor');
 	assert.equal(context.surface.kind, 'site');
 
@@ -381,12 +394,20 @@ entities:
 	assert.ok(plan.rules.some((rule) => rule.pattern === 'monday.*' && rule.action === 'approve'));
 	assert.ok(plan.rules.some((rule) => rule.pattern === 'monday.items.update' && rule.action === 'require_approval' && rule.enforcement === 'executor-and-link'));
 	assert.ok(plan.rules.some((rule) => rule.pattern === 'sharepoint.files.upload' && rule.action === 'block'));
+	const mondayUpdate = plan.rules.find((rule) => rule.pattern === 'monday.items.update');
+	assert.ok(mondayUpdate);
+	assert.equal('constraints' in mondayUpdate, false);
+	assert.ok(
+		mondayUpdate.resourceGuards.some((guard) =>
+			guard.anyOf.some((predicate) => predicate.path === 'boardId' && predicate.operator === 'equals' && predicate.value === '18204749659')
+		)
+	);
 });
 
 test('resolves relative config paths from the original shell PWD', async () => {
 	const dir = await tempDir();
 	const configPath = path.join(dir, 'mere.link.yaml');
-	run(['config', 'init', '--workspace', 'ws_123', '--name', 'Acme', '--output', configPath, '--yes']);
+	run(['config', 'init', '--workspace', 'ws_123', '--name', 'Example Org', '--output', configPath, '--yes']);
 
 	const validate = parseJson<ValidateResult>(run(['config', 'validate', '--config', 'mere.link.yaml', '--json'], {
 		cwd: path.dirname(bin),
@@ -396,6 +417,91 @@ test('resolves relative config paths from the original shell PWD', async () => {
 	assert.equal(validate.path, configPath);
 });
 
+test('evaluates neutral operator policy with deny defaults and explicit deny precedence', async () => {
+	const dir = await tempDir();
+	const configPath = path.join(dir, 'mere.link.yaml');
+	await writeFile(configPath, `schemaVersion: 1
+operators:
+  approved-agent:
+    name: Approved Agent
+    type: agent
+    provider: managed-runtime
+    client: agent-shell
+    accountClass: org-managed
+    accountId: example-managed-account
+    trustTier: approved
+    environment: local-cli
+  untrusted-browser:
+    name: Untrusted Browser
+    type: external
+    provider: public-runtime
+    client: browser
+    accountClass: personal
+    trustTier: unknown
+policy:
+  defaultEffect: deny
+  notes:
+    - Operator identity gates project context export.
+  rules:
+    - id: deny-personal-operators
+      effect: deny
+      capabilities: ["*"]
+      accountClasses: [personal, unknown]
+      reason: Personal or unidentified accounts cannot receive project context.
+    - id: allow-approved-agent
+      effect: allow
+      capabilities: [project.context.export, sync.plan, repo.documentation.write]
+      providers: [managed-runtime]
+      clients: [agent-shell]
+      accountClasses: [org-managed]
+      trustTiers: [approved]
+      reason: Approved managed agents can inspect context and prepare documentation.
+    - id: deny-code-write
+      effect: deny
+      capabilities: [repo.code.write]
+      reason: Operators may review or document code, but may not write implementation code.
+integrations:
+  github:
+    plugin: executor
+    namespace: github
+entities:
+  example-org:
+    name: Example Organization
+    projects:
+      rollout:
+        name: Rollout
+        surfaces:
+          code:
+            integration: github
+            kind: repo
+            id: example/repo
+`, 'utf8');
+
+	const allowed = parseJson<OperatorPolicyResult>(run(['policy', 'evaluate', 'example-org', 'rollout', '--config', configPath, '--operator', 'approved-agent', '--capability', 'project.context.export,sync.plan', '--json']));
+	assert.equal(allowed.policy.source, 'root');
+	assert.equal(allowed.decision.allowed, true);
+	assert.deepEqual(allowed.decision.capabilityDecisions.map((decision) => decision.matchedRule), ['allow-approved-agent', 'allow-approved-agent']);
+
+	const personal = commandResult(['policy', 'evaluate', 'example-org', 'rollout', '--config', configPath, '--operator', 'untrusted-browser', '--capability', 'project.context.export', '--json']);
+	assert.equal(personal.status, 2);
+	const deniedPersonal = parseJson<OperatorPolicyResult>(personal.stdout);
+	assert.equal(deniedPersonal.decision.allowed, false);
+	assert.equal(deniedPersonal.decision.capabilityDecisions[0]?.matchedRule, 'deny-personal-operators');
+
+	const codeWrite = commandResult(['policy', 'evaluate', 'example-org', 'rollout', '--config', configPath, '--operator', 'approved-agent', '--capability', 'repo.code.write', '--json']);
+	assert.equal(codeWrite.status, 2);
+	const deniedCodeWrite = parseJson<OperatorPolicyResult>(codeWrite.stdout);
+	assert.equal(deniedCodeWrite.decision.capabilityDecisions[0]?.matchedRule, 'deny-code-write');
+
+	const override = parseJson<OperatorPolicyResult>(run(['policy', 'evaluate', 'example-org', 'rollout', '--config', configPath, '--operator', 'untrusted-browser', '--capability', 'project.context.export', '--override', '--json']));
+	assert.equal(override.decision.allowed, true);
+	assert.equal(override.decision.capabilityDecisions[0]?.matchedRule, 'operator-override');
+
+	const taxonomy = parseJson<{ capabilities: string[] }>(run(['policy', 'taxonomy', '--json']));
+	assert.ok(taxonomy.capabilities.includes('project.context.export'));
+	assert.ok(taxonomy.capabilities.includes('repo.code.write'));
+});
+
 test('plans Mere Projects materialization with explicit sync policy', async () => {
 	const dir = await tempDir();
 	const configPath = path.join(dir, 'mere.link.yaml');
@@ -403,7 +509,7 @@ test('plans Mere Projects materialization with explicit sync policy', async () =
 integrations:
   mere:
     plugin: mere
-    workspace: ws_geo
+    workspace: ws_example
   executor:
     plugin: executor
   monday:
@@ -412,16 +518,16 @@ integrations:
   slack:
     plugin: executor
     namespace: slack
-    workspace: geoacuity
+    workspace: workspace-team
   github:
     plugin: executor
     namespace: github
 entities:
-  geoacuity:
-    name: GeoAcuity
+  workspace-team:
+    name: Workspace Team
     projects:
       workspace:
-        name: GeoAcuity Workspace
+        name: Workspace Team Workspace
         surfaces:
           projects-app:
             integration: mere
@@ -429,12 +535,12 @@ entities:
             id: projects
             policy:
               writes: [sync]
-  booz-allen-hamilton:
-    name: Booz Allen Hamilton
-    aliases: [booz]
+  example-client:
+    name: Example Client
+    aliases: [client]
     projects:
-      egis:
-        name: eGIS Project Plan
+      field-mapping:
+        name: Field Mapping Project Plan
         surfaces:
           work:
             integration: monday
@@ -447,17 +553,17 @@ entities:
           code:
             integration: github
             kind: repo
-            id: GeoAcuity/example
+            id: ExampleOrg/example
             optional: true
 `, 'utf8');
 
-	const plan = parseJson<ProjectsSyncPlanResult>(run(['sync', 'projects', 'booz', 'egis', '--config', configPath, '--json']));
+	const plan = parseJson<ProjectsSyncPlanResult>(run(['sync', 'projects', 'client', 'field-mapping', '--config', configPath, '--json']));
 	assert.equal(plan.apply, false);
-	assert.equal(plan.workspace, 'ws_geo');
-	assert.equal(plan.policySurface, 'geoacuity/workspace:projects-app');
+	assert.equal(plan.workspace, 'ws_example');
+	assert.equal(plan.policySurface, 'workspace-team/workspace:projects-app');
 	assert.equal(plan.projectCount, 1);
 	assert.equal(plan.linkCount, 3);
-	assert.equal(plan.projects[0]?.payload.attributes.mereLinkKey, 'booz-allen-hamilton/egis');
+	assert.equal(plan.projects[0]?.payload.attributes.mereLinkKey, 'example-client/field-mapping');
 	assert.equal(plan.links.find((link) => link.role === 'work')?.url, 'https://monday.com/boards/18204749659');
 	assert.equal(plan.links.find((link) => link.role === 'discussion')?.kind, 'slack.channel');
 	assert.equal(plan.links.find((link) => link.role === 'code')?.kind, 'github.repo');
@@ -470,7 +576,7 @@ test('plans Executor-backed Monday and SharePoint links', async () => {
 integrations:
   mere:
     plugin: mere
-    workspace: ws_acme
+    workspace: ws_example
   executor:
     plugin: executor
     baseUrl: http://localhost:4788
@@ -481,11 +587,11 @@ integrations:
     plugin: executor
     namespace: sharepoint
 entities:
-  acme:
-    name: Acme
+  example-org:
+    name: Example Organization
     projects:
       workspace:
-        name: Acme Workspace
+        name: Example Workspace
         surfaces:
           projects-app:
             integration: mere
@@ -503,13 +609,13 @@ entities:
           docs:
             integration: sharepoint
             kind: site
-            id: sawfwair.sharepoint.com/sites/acme
+            id: example.sharepoint.com/sites/project
 `, 'utf8');
 
-	const plan = parseJson<ProjectsSyncPlanResult>(run(['sync', 'projects', 'acme', 'rollout', '--config', configPath, '--json']));
+	const plan = parseJson<ProjectsSyncPlanResult>(run(['sync', 'projects', 'example-org', 'rollout', '--config', configPath, '--json']));
 	assert.equal(plan.linkCount, 2);
 	assert.equal(plan.links.find((link) => link.role === 'work')?.url, 'https://monday.com/boards/18204749659');
-	assert.equal(plan.links.find((link) => link.role === 'docs')?.url, 'https://sawfwair.sharepoint.com/sites/acme');
+	assert.equal(plan.links.find((link) => link.role === 'docs')?.url, 'https://example.sharepoint.com/sites/project');
 });
 
 test('applies Mere Projects sync to configured records without updating rich fields', async () => {
@@ -521,18 +627,18 @@ test('applies Mere Projects sync to configured records without updating rich fie
 integrations:
   mere:
     plugin: mere
-    workspace: ws_geo
+    workspace: ws_example
   executor:
     plugin: executor
   monday:
     plugin: executor
     namespace: monday
 entities:
-  geoacuity:
-    name: GeoAcuity
+  workspace-team:
+    name: Workspace Team
     projects:
       workspace:
-        name: GeoAcuity Workspace
+        name: Workspace Team Workspace
         surfaces:
           projects-app:
             integration: mere
@@ -540,11 +646,11 @@ entities:
             id: projects
             policy:
               writes: [sync]
-  booz-allen-hamilton:
-    name: Booz Allen Hamilton
+  example-client:
+    name: Example Client
     projects:
-      egis:
-        name: eGIS Project Plan
+      field-mapping:
+        name: Field Mapping Project Plan
         surfaces:
           mere-project:
             integration: mere
@@ -562,7 +668,7 @@ const dataIndex = args.indexOf('--data');
 const data = dataIndex >= 0 ? JSON.parse(args[dataIndex + 1]) : null;
 appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({ args, data }) + '\\n');
 if (args[0] === 'projects' && args[1] === 'project' && args[2] === 'list') {
-  console.log(JSON.stringify([{ id: 'prj_existing', attributes: { existingKeep: true }, title: 'Existing eGIS', dateStart: '2024-01-01' }]));
+  console.log(JSON.stringify([{ id: 'prj_existing', attributes: { existingKeep: true }, title: 'Existing Field Mapping', dateStart: '2024-01-01' }]));
 } else if (args[0] === 'projects' && args[1] === 'project' && args[2] === 'update') {
   console.error('existing projects should not be updated');
   process.exit(2);
@@ -575,7 +681,7 @@ if (args[0] === 'projects' && args[1] === 'project' && args[2] === 'list') {
 `, 'utf8');
 	await chmod(fakeMerePath, 0o755);
 
-	const result = parseJson<ProjectsSyncApplyResult>(run(['sync', 'projects', 'booz-allen-hamilton', 'egis', '--config', configPath, '--apply', '--mere-bin', fakeMerePath, '--json']));
+	const result = parseJson<ProjectsSyncApplyResult>(run(['sync', 'projects', 'example-client', 'field-mapping', '--config', configPath, '--apply', '--mere-bin', fakeMerePath, '--json']));
 	assert.equal(result.plan.projects[0]?.existingId, 'prj_existing');
 	assert.equal(result.result.projects[0]?.action, 'matched');
 
@@ -592,28 +698,28 @@ test('denies Mere Projects sync without surface policy', async () => {
 integrations:
   mere:
     plugin: mere
-    workspace: ws_geo
+    workspace: ws_example
   executor:
     plugin: executor
   monday:
     plugin: executor
     namespace: monday
 entities:
-  geoacuity:
-    name: GeoAcuity
+  workspace-team:
+    name: Workspace Team
     projects:
       workspace:
-        name: GeoAcuity Workspace
+        name: Workspace Team Workspace
         surfaces:
           projects-app:
             integration: mere
             kind: app
             id: projects
-  booz-allen-hamilton:
-    name: Booz Allen Hamilton
+  example-client:
+    name: Example Client
     projects:
-      egis:
-        name: eGIS Project Plan
+      field-mapping:
+        name: Field Mapping Project Plan
         surfaces:
           work:
             integration: monday
@@ -640,8 +746,8 @@ integrations:
     plugin: executor
     namespace: monday
 entities:
-  acme:
-    name: Acme
+  example-org:
+    name: Example Organization
     projects:
       rollout:
         name: Rollout
@@ -678,7 +784,7 @@ entities:
 	}
 });
 
-test('guards Executor write invocation with Link policy, apply, and resource constraints', async () => {
+test('guards Executor write invocation with Link policy, apply, and resource guards', async () => {
 	const fake = await startFakeExecutor();
 	try {
 		const dir = await tempDir();
@@ -692,8 +798,8 @@ integrations:
     plugin: executor
     namespace: monday
 entities:
-  acme:
-    name: Acme
+  example-org:
+    name: Example Organization
     projects:
       rollout:
         name: Rollout
@@ -741,7 +847,7 @@ integrations:
     plugin: executor
     namespace: monday
 entities:
-  acme:
+  example-org:
     projects:
       app:
         surfaces:
@@ -757,7 +863,7 @@ integrations:
   url:
     plugin: url
 entities:
-  acme:
+  example-org:
     projects:
       app:
         surfaces:
@@ -771,11 +877,36 @@ entities:
 	assert.match(commandResult(['config', 'validate', '--config', configPath]).stderr, /does not support write/);
 
 	await writeFile(configPath, `schemaVersion: 1
+policy:
+  defaultEffect: maybe
+  rules:
+    - effect: allow
+      capabilities: [project.context.export]
+integrations:
+  url:
+    plugin: url
+entities: {}
+`, 'utf8');
+	assert.match(commandResult(['config', 'validate', '--config', configPath]).stderr, /defaultEffect/);
+
+	await writeFile(configPath, `schemaVersion: 1
+policy:
+  rules:
+    - effect: allow
+      capabilities: []
+integrations:
+  url:
+    plugin: url
+entities: {}
+`, 'utf8');
+	assert.match(commandResult(['config', 'validate', '--config', configPath]).stderr, /capabilities/);
+
+	await writeFile(configPath, `schemaVersion: 1
 integrations:
   url:
     plugin: url
 entities:
-  acme:
+  example-org:
     projects:
       app:
         surfaces:
@@ -785,7 +916,7 @@ entities:
             id: https://example.com
 links:
   - from: missing-format
-    to: acme/app:docs
+    to: example-org/app:docs
 `, 'utf8');
 	assert.match(commandResult(['config', 'validate', '--config', configPath]).stderr, /Invalid link endpoint/);
 });
@@ -793,8 +924,8 @@ links:
 test('rejects ambiguous aliases and protects existing config files from accidental overwrite', async () => {
 	const dir = await tempDir();
 	const configPath = path.join(dir, 'mere.link.yaml');
-	run(['config', 'init', '--workspace', 'ws_123', '--name', 'Acme', '--output', configPath, '--yes']);
-	assert.match(commandResult(['config', 'init', '--workspace', 'ws_123', '--name', 'Acme', '--output', configPath]).stderr, /Refusing to overwrite/);
+	run(['config', 'init', '--workspace', 'ws_123', '--name', 'Example Org', '--output', configPath, '--yes']);
+	assert.match(commandResult(['config', 'init', '--workspace', 'ws_123', '--name', 'Example Org', '--output', configPath]).stderr, /Refusing to overwrite/);
 
 	await writeFile(configPath, `schemaVersion: 1
 integrations:
@@ -837,18 +968,18 @@ test('reports malformed snapshot and Mere CLI JSON at the boundary', async () =>
 integrations:
   mere:
     plugin: mere
-    workspace: ws_geo
+    workspace: ws_example
   executor:
     plugin: executor
   monday:
     plugin: executor
     namespace: monday
 entities:
-  geoacuity:
-    name: GeoAcuity
+  workspace-team:
+    name: Workspace Team
     projects:
       workspace:
-        name: GeoAcuity Workspace
+        name: Workspace Team Workspace
         surfaces:
           projects-app:
             integration: mere
@@ -856,11 +987,11 @@ entities:
             id: projects
             policy:
               writes: [sync]
-  booz-allen-hamilton:
-    name: Booz Allen Hamilton
+  example-client:
+    name: Example Client
     projects:
-      egis:
-        name: eGIS Project Plan
+      field-mapping:
+        name: Field Mapping Project Plan
         surfaces:
           work:
             integration: monday
@@ -872,7 +1003,7 @@ console.log('not json');
 `, 'utf8');
 	await chmod(fakeMerePath, 0o755);
 
-	const result = commandResult(['sync', 'projects', 'booz-allen-hamilton', 'egis', '--config', configPath, '--apply', '--mere-bin', fakeMerePath]);
+	const result = commandResult(['sync', 'projects', 'example-client', 'field-mapping', '--config', configPath, '--apply', '--mere-bin', fakeMerePath]);
 	assert.notEqual(result.status, 0);
 	assert.match(result.stderr, /must be valid JSON/);
 });

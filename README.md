@@ -12,18 +12,50 @@ Built-in integration plugins include `mere`, `executor`, `url`, `local`, and `ge
 
 `executor` is the runtime bridge for product integrations. Link keeps the declarative graph and write policy in `mere.link.yaml`; Executor owns tool discovery, schemas, auth, approvals, and invocation for systems such as Monday, SharePoint, GitHub, Slack, OpenAPI, MCP, and GraphQL.
 
+Operator policy adds a neutral capability gate for agent and human operators. It evaluates operator identity, provider, client, account class, trust tier, environment, and requested capabilities before context export, sync planning, or tool use.
+
+## Executor Runtime
+
+The core Link commands work without Executor. The `mere-link executor ...` commands require an [Executor](https://github.com/RhysSullivan/executor)-compatible HTTP runtime.
+
+For local development, install and start Executor separately:
+
+```sh
+npm install -g executor
+executor web
+```
+
+Executor's default local runtime is `http://127.0.0.1:4788`. Link defaults to `http://localhost:4788`, and you can override it with either config or flags:
+
+```yaml
+integrations:
+  executor:
+    plugin: executor
+    baseUrl: http://127.0.0.1:4788
+```
+
+```sh
+mere-link executor sources --executor-base-url http://127.0.0.1:4788 --json
+mere-link executor tools search "github issue" --executor-base-url http://127.0.0.1:4788 --json
+```
+
+If the runtime requires a bearer token, set `MERE_LINK_EXECUTOR_TOKEN`, declare `tokenEnv` on the Executor integration, or pass `--executor-token-env ENV_NAME`.
+
 ## Docs
 
 - [Codebase Map](CODEBASE.md)
 - [Design Decisions](DECISIONS.md)
 - [Agent Guide](AGENTS.md)
+- [Contributing](CONTRIBUTING.md)
 - [Operations](docs/operations.md)
+- [Security](SECURITY.md)
 
 ```sh
 npm install -g @merekit/link
 mere-link config init --output mere.link.yaml
 mere-link config validate --config mere.link.yaml
 mere-link context inspect workspace workspace --role work --config mere.link.yaml --json
+mere-link policy evaluate workspace workspace --capability project.context.export --operator approved-agent --json
 mere-link sync projects --config mere.link.yaml --json
 mere-link executor tools search "monday item" --json
 mere-link executor policy compile --config mere.link.yaml --json
@@ -32,10 +64,15 @@ mere-link executor policy compile --config mere.link.yaml --json
 When bundled by `@merekit/cli`, the same command surface is available as:
 
 ```sh
+npm install -g @merekit/cli
 mere link config init --output mere.link.yaml
 mere link generate workspace --workspace ws_123 --output mere.link.yaml --yes
+mere link policy evaluate workspace workspace --capability project.context.export --operator approved-agent --json
 mere link sync projects --config mere.link.yaml --json
+mere link executor tools search "monday item" --json
 ```
+
+`@merekit/cli` publishes the root `mere` command and bundles a generated Link adapter for convenience. Link remains the source package for the command behavior, docs, YAML model, and safety policy; the root CLI discovers the Link command manifest and delegates `mere link ...` through that adapter.
 
 `sync projects` plans Mere Projects records and URL links from configured work surfaces. It is a dry run unless `--apply` is passed, and planning/applying requires a `mere` Projects app surface with `policy.writes: [sync]`.
 
@@ -57,8 +94,8 @@ integrations:
     namespace: sharepoint
 
 entities:
-  acme:
-    name: Acme
+  example:
+    name: Example Organization
     projects:
       rollout:
         name: Rollout
@@ -72,7 +109,7 @@ entities:
           docs:
             integration: sharepoint
             kind: site
-            id: sawfwair.sharepoint.com/sites/acme
+            id: example.sharepoint.com/sites/project
 ```
 
 Compile Link policy into deterministic Executor rules before applying:
@@ -83,11 +120,33 @@ mere-link executor policy apply --config mere.link.yaml --yes --json
 ```
 
 Executor writes through Link require a declared surface, compiled write policy, matching resource arguments, and `--apply`.
+Compiled plans expose Link's local resource checks as `resourceGuards`, made from `ArgumentPredicate` entries such as `boardId equals <declared board>`.
 
 ## YAML Shape
 
 ```yaml
 schemaVersion: 1
+operators:
+  approved-agent:
+    name: Approved Agent
+    type: agent
+    provider: managed-runtime
+    client: agent-shell
+    accountClass: org-managed
+    trustTier: approved
+policy:
+  defaultEffect: deny
+  rules:
+    - id: allow-approved-context
+      effect: allow
+      capabilities: [project.context.export, sync.plan, repo.documentation.write]
+      providers: [managed-runtime]
+      clients: [agent-shell]
+      accountClasses: [org-managed]
+      trustTiers: [approved]
+    - id: deny-code-write
+      effect: deny
+      capabilities: [repo.code.write]
 integrations:
   mere:
     plugin: mere
@@ -126,6 +185,14 @@ links:
   - from: workspace/workspace:work
     to: workspace/workspace:docs
     label: Documentation
+```
+
+Evaluate operator policy before exporting context or preparing write payloads:
+
+```sh
+mere-link policy taxonomy --json
+mere-link policy evaluate workspace workspace --capability project.context.export --operator approved-agent --json
+mere-link policy guidance
 ```
 
 ## Development

@@ -9,7 +9,7 @@ Key modules:
 - `src/sync/projects.ts`: dry-run/apply planning for Mere Projects records and links.
 - `src/runtime/*`: argument parsing, paths, output tables, JSON/YAML/subprocess/Executor HTTP boundaries.
 - `src/domain/*`: shared types, plugin capabilities, scalar guards.
-- `src/sync/executor-policy.ts`: compiles Link surfaces and `policy.writes` into Executor policy rules and checks Link-side resource constraints before write invocation.
+- `src/sync/executor-policy.ts`: compiles Link surfaces and `policy.writes` into Executor policy rules and checks Link-side resource guards before write invocation.
 
 Rules for agents:
 

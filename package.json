@@ -12,17 +12,39 @@
       "import": "./dist/run.js"
     }
   },
-  "author": "Sawfwair",
+  "author": "MereKit contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sawfwair/merekit-link.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sawfwair/merekit-link/issues"
+  },
+  "homepage": "https://github.com/sawfwair/merekit-link#readme",
+  "keywords": [
+    "agent",
+    "cli",
+    "link-graph",
+    "merekit",
+    "policy",
+    "workspace"
+  ],
   "bin": {
     "mere-link": "dist/run.js"
   },
   "files": [
     "dist",
+    "AGENTS.md",
     "CODEBASE.md",
+    "CONTRIBUTING.md",
     "DECISIONS.md",
+    "docs/**/*.md",
+    "docs/.vitepress/config.mts",
+    "docs/.vitepress/theme",
     "README.md",
     "LICENSE",
-    "NOTICE"
+    "NOTICE",
+    "SECURITY.md"
   ],
   "publishConfig": {
     "access": "public"
@@ -33,11 +55,15 @@
     "prepack": "pnpm build",
     "build": "tsc -p tsconfig.json && chmod 755 dist/run.js",
     "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs",
     "lint": "eslint . --max-warnings=0",
     "test": "pnpm build && tsx --test test/*.test.ts",
     "coverage": "pnpm build && c8 --include='dist/**/*.js' --reporter=text --check-coverage --lines 80 --functions 80 --branches 70 tsx --test test/*.test.ts",
     "smoke": "pnpm build && node dist/run.js --version >/dev/null && node dist/run.js commands --json >/dev/null && node dist/run.js completion bash >/dev/null",
-    "verify": "pnpm lint && pnpm check && pnpm test && pnpm coverage && pnpm smoke && npm pack --dry-run --ignore-scripts",
+    "smoke:package": "pnpm build && tsx scripts/smoke-package.ts",
+    "verify": "pnpm lint && pnpm check && pnpm test && pnpm coverage && pnpm smoke && pnpm smoke:package && pnpm docs:build && npm pack --dry-run --ignore-scripts",
     "pack:dry": "pnpm verify"
   },
   "dependencies": {
@@ -50,7 +76,8 @@
     "eslint": "^10.3.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.59.2"
+    "typescript-eslint": "^8.59.2",
+    "vitepress": "1.6.4"
   },
   "engines": {
     "node": ">=22 <26"

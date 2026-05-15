@@ -1,11 +1,12 @@
 import { normalizeKey } from '../domain/guards.js';
 import type {
-	ExecutorPolicyConstraint,
+	ArgumentPredicate,
 	ExecutorPolicyPlan,
 	ExecutorPolicyRule,
 	IntegrationConfig,
 	JsonRecord,
 	LinkConfigFile,
+	ResourceGuard,
 	SurfaceConfig
 } from '../domain/types.js';
 
@@ -139,16 +140,20 @@ function executorSurfaceEntries(config: LinkConfigFile): SurfaceEntry[] {
 	return entries;
 }
 
-function resourceConstraint(entry: SurfaceEntry): ExecutorPolicyConstraint | null {
+function argumentEquals(path: string, value: string): ArgumentPredicate {
+	return { path, operator: 'equals', value };
+}
+
+function resourceGuard(entry: SurfaceEntry): ResourceGuard | null {
 	const id = entry.surface.id;
 	if (entry.namespace === 'monday' && entry.surface.kind === 'board') {
 		return {
 			label: `${entry.path} board`,
 			anyOf: [
-				{ path: 'boardId', equals: id },
-				{ path: 'board_id', equals: id },
-				{ path: 'board.id', equals: id },
-				{ path: 'board.id.value', equals: id }
+				argumentEquals('boardId', id),
+				argumentEquals('board_id', id),
+				argumentEquals('board.id', id),
+				argumentEquals('board.id.value', id)
 			]
 		};
 	}
@@ -156,43 +161,35 @@ function resourceConstraint(entry: SurfaceEntry): ExecutorPolicyConstraint | nul
 		return {
 			label: `${entry.path} site`,
 			anyOf: [
-				{ path: 'siteId', equals: id },
-				{ path: 'site_id', equals: id },
-				{ path: 'site', equals: id },
-				{ path: 'siteUrl', equals: id },
-				{ path: 'site_url', equals: id }
+				argumentEquals('siteId', id),
+				argumentEquals('site_id', id),
+				argumentEquals('site', id),
+				argumentEquals('siteUrl', id),
+				argumentEquals('site_url', id)
 			]
 		};
 	}
 	if (entry.namespace === 'sharepoint' && entry.surface.kind === 'list') {
 		return {
 			label: `${entry.path} list`,
-			anyOf: [
-				{ path: 'listId', equals: id },
-				{ path: 'list_id', equals: id },
-				{ path: 'list', equals: id }
-			]
+			anyOf: [argumentEquals('listId', id), argumentEquals('list_id', id), argumentEquals('list', id)]
 		};
 	}
 	if (entry.namespace === 'github' && entry.surface.kind === 'repo') {
 		return {
 			label: `${entry.path} repo`,
 			anyOf: [
-				{ path: 'repo', equals: id },
-				{ path: 'repository', equals: id },
-				{ path: 'repositoryId', equals: id },
-				{ path: 'repository_id', equals: id }
+				argumentEquals('repo', id),
+				argumentEquals('repository', id),
+				argumentEquals('repositoryId', id),
+				argumentEquals('repository_id', id)
 			]
 		};
 	}
 	if (entry.namespace === 'slack' && entry.surface.kind === 'channel') {
 		return {
 			label: `${entry.path} channel`,
-			anyOf: [
-				{ path: 'channel', equals: id },
-				{ path: 'channelId', equals: id },
-				{ path: 'channel_id', equals: id }
-			]
+			anyOf: [argumentEquals('channel', id), argumentEquals('channelId', id), argumentEquals('channel_id', id)]
 		};
 	}
 	return null;
@@ -229,13 +226,13 @@ export function compileExecutorPolicy(config: LinkConfigFile, scopeId: string | 
 			reason: `Allow reads for declared ${namespace} surfaces.`,
 			enforcement: 'executor',
 			surfaces: namespaceEntries.map((entry) => entry.path),
-			constraints: []
+			resourceGuards: []
 		});
 
 		const writePatterns = [...new Set(namespaceEntries.flatMap(allExecutorWritePatternsForEntry))];
 		for (const pattern of writePatterns) {
 			const writableEntries = namespaceEntries.filter((entry) => executorWritePatternsForSurfacePolicy(namespace, entry.surface).includes(pattern));
-			const constraints = writableEntries.map(resourceConstraint).filter((constraint): constraint is ExecutorPolicyConstraint => Boolean(constraint));
+			const resourceGuards = writableEntries.map(resourceGuard).filter((guard): guard is ResourceGuard => Boolean(guard));
 			const allowed = writableEntries.length > 0;
 			rules.set(`${allowed ? 'require_approval' : 'block'}:${pattern}`, {
 				pattern,
@@ -243,9 +240,9 @@ export function compileExecutorPolicy(config: LinkConfigFile, scopeId: string | 
 				reason: allowed
 					? `Require approval for ${namespace} writes granted by Link surface policy.`
 					: `Block ${namespace} writes because no declared surface grants a matching write policy.`,
-				enforcement: allowed && constraints.length > 0 ? 'executor-and-link' : 'executor',
+				enforcement: allowed && resourceGuards.length > 0 ? 'executor-and-link' : 'executor',
 				surfaces: (allowed ? writableEntries : namespaceEntries).map((entry) => entry.path),
-				constraints
+				resourceGuards
 			});
 		}
 	}
@@ -277,17 +274,28 @@ function valueAtPath(record: JsonRecord, path: string): unknown {
 	return current;
 }
 
-function constraintMatches(args: JsonRecord, constraint: ExecutorPolicyConstraint): boolean {
-	return constraint.anyOf.some((candidate) => {
-		const value = valueAtPath(args, candidate.path);
-		if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value) === candidate.equals;
-		return false;
-	});
+function scalarValue(value: unknown): string | null {
+	if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
+	return null;
+}
+
+function argumentPredicateMatches(args: JsonRecord, predicate: ArgumentPredicate): boolean {
+	const actual = scalarValue(valueAtPath(args, predicate.path));
+	if (actual === null) return false;
+	if (predicate.operator === 'equals') return actual === predicate.value;
+	if (predicate.operator === 'notEquals') return actual !== predicate.value;
+	if (predicate.operator === 'contains') return actual.includes(predicate.value);
+	if (predicate.operator === 'startsWith') return actual.startsWith(predicate.value);
+	return false;
+}
+
+function resourceGuardMatches(args: JsonRecord, guard: ResourceGuard): boolean {
+	return guard.anyOf.some((predicate) => argumentPredicateMatches(args, predicate));
 }
 
 function ruleResourceMatches(args: JsonRecord, rule: ExecutorPolicyRule): boolean {
-	if (rule.constraints.length === 0) return true;
-	return rule.constraints.some((constraint) => constraintMatches(args, constraint));
+	if (rule.resourceGuards.length === 0) return true;
+	return rule.resourceGuards.some((guard) => resourceGuardMatches(args, guard));
 }
 
 function namespaceDeclared(config: LinkConfigFile, toolId: string): boolean {

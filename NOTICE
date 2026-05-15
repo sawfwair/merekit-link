@@ -1,8 +1,7 @@
 MereKit Link
-Copyright Sawfwair
+Copyright MereKit contributors
 
-Executor integration support is designed to use Rhys Sullivan's Executor
-project through a narrow runtime boundary. Executor is MIT licensed. If
-Executor code is vendored, forked, or bundled with this package in the
-future, preserve the upstream MIT copyright and permission notice with the
-distributed artifact.
+Executor integration support is designed to use compatible Executor runtimes
+through a narrow runtime boundary. If third-party Executor code is vendored,
+forked, or bundled with this package in the future, preserve the applicable
+upstream copyright and license notices with the distributed artifact.

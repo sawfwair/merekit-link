@@ -1,10 +1,20 @@
 #!/usr/bin/env node
+import { realpathSync } from 'node:fs';
 import process from 'node:process';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { loadConfig, writeConfigOutput } from './config/file.js';
 import { buildContext, entityRows, normalizeConfig, projectRows, summarize, surfaceRows } from './config/normalize.js';
 import { configFromWorkspaceSnapshot, starterConfig } from './config/starter.js';
 import { HELP_TEXT, VERSION, manifest, renderCompletion } from './manifest.js';
+import {
+	capabilitiesFromFlag,
+	evaluateOperatorPolicy,
+	formatOperator,
+	policyBootstrapGuidance,
+	policyOverrideRequested,
+	policyTaxonomy,
+	resolveOperatorIdentity
+} from './policy.js';
 import { boolFlag, parseArgs, stringFlag } from './runtime/args.js';
 import {
 	applyExecutorPolicy,
@@ -124,6 +134,80 @@ async function handleSyncProjects(rest: string[], flags: ReturnType<typeof parse
 	return 0;
 }
 
+async function handlePolicyCommands(action: string | undefined, rest: string[], flags: ReturnType<typeof parseArgs>['flags']): Promise<number | null> {
+	if (action === 'taxonomy') {
+		const taxonomy = policyTaxonomy();
+		if (boolFlag(flags, 'json')) writeJson(taxonomy);
+		else {
+			writeText('Operator Policy Taxonomy');
+			writeText(`Sources: ${taxonomy.sources.join('; ')}`);
+			writeText(`Operator attributes: ${taxonomy.operatorAttributes.join(', ')}`);
+			writeText('');
+			writeText('Capabilities');
+			for (const capability of taxonomy.capabilities) writeText(`- ${capability}`);
+		}
+		return 0;
+	}
+	if (action === 'guidance') {
+		const guidance = policyBootstrapGuidance();
+		if (boolFlag(flags, 'json')) writeJson(guidance);
+		else {
+			writeText('Operator Policy Bootstrap');
+			for (const step of guidance.steps) writeText(`- ${step}`);
+			writeText('');
+			writeText(`Identity environment variables: ${guidance.identityEnv.join(', ')}`);
+		}
+		return 0;
+	}
+	if (action === 'evaluate') {
+		const entity = rest[0];
+		if (!entity) throw new Error('Usage: mere-link policy evaluate <entity> [project] [--capability NAME[,NAME]] [--operator KEY] [--json]');
+		const { config } = await loadConfig(flags);
+		const operator = resolveOperatorIdentity(config, flags);
+		const preliminary = evaluateOperatorPolicy({
+			config,
+			entityRef: entity,
+			projectRef: rest[1],
+			operator,
+			capabilities: capabilitiesFromFlag(stringFlag(flags, 'capability')),
+			environment: stringFlag(flags, 'operator-environment'),
+			override: policyOverrideRequested(flags)
+		});
+		const capabilities = capabilitiesFromFlag(stringFlag(flags, 'capability'), preliminary.policy);
+		const { policy, decision } = evaluateOperatorPolicy({
+			config,
+			entityRef: entity,
+			projectRef: rest[1],
+			operator,
+			capabilities,
+			environment: stringFlag(flags, 'operator-environment'),
+			override: policyOverrideRequested(flags)
+		});
+		if (boolFlag(flags, 'json')) writeJson({ policy, decision });
+		else {
+			writeText(`${decision.entity} / ${decision.project} operator policy`);
+			writeText(`Operator: ${formatOperator(operator)}`);
+			writeText(`Policy source: ${policy.source}`);
+			writeText(`Default effect: ${policy.defaultEffect}`);
+			writeText(`Decision: ${decision.allowed ? 'allowed' : 'denied'}`);
+			if (policy.notes.length > 0) {
+				writeText('');
+				writeText('Notes');
+				for (const note of policy.notes) writeText(`- ${note}`);
+			}
+			writeText('');
+			printTable(decision.capabilityDecisions.map((capabilityDecision) => ({
+				capability: capabilityDecision.capability,
+				effect: capabilityDecision.effect,
+				rule: capabilityDecision.matchedRule ?? '',
+				reason: capabilityDecision.reason
+			})), ['capability', 'effect', 'rule', 'reason']);
+		}
+		return decision.allowed ? 0 : 2;
+	}
+	return null;
+}
+
 function dataFlag(flags: ReturnType<typeof parseArgs>['flags']): JsonRecord {
 	const raw = stringFlag(flags, 'data');
 	return raw ? parseJsonRecord(raw, '--data') : {};
@@ -219,6 +303,10 @@ export async function main(argv: string[]): Promise<number> {
 	const listResult = await handleListCommands(group, action, rest, flags);
 	if (listResult !== null) return listResult;
 	if (group === 'context' && action === 'inspect') return handleContextInspect(rest, flags);
+	if (group === 'policy') {
+		const handled = await handlePolicyCommands(action, rest, flags);
+		if (handled !== null) return handled;
+	}
 	if (group === 'sync' && action === 'projects') return handleSyncProjects(rest, flags);
 	if (group === 'executor') {
 		const handled = await handleExecutorCommands(action, rest, flags);
@@ -231,13 +319,24 @@ export {
 	buildContext,
 	compileExecutorPolicy,
 	configFromWorkspaceSnapshot,
+	evaluateOperatorPolicy,
 	manifest,
 	normalizeConfig,
+	resolveOperatorIdentity,
 	starterConfig
 };
 
-const isDirectRun = process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false;
-if (isDirectRun) {
+function isDirectCliRun(): boolean {
+	const entrypoint = process.argv[1];
+	if (!entrypoint) return false;
+	try {
+		return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(entrypoint);
+	} catch {
+		return import.meta.url === pathToFileURL(entrypoint).href;
+	}
+}
+
+if (isDirectCliRun()) {
 	main(process.argv.slice(2)).then((code) => {
 		process.exitCode = code;
 	}).catch((error: unknown) => {

@@ -192,7 +192,7 @@ export async function invokeExecutorTool(flags: Flags, config: LinkConfigFile, t
 	const code = [
 		'async () => {',
 		`  const __tool = tools${access};`,
-		`  if (typeof __tool !== "function") throw new Error("Tool not found: ${toolId.replace(/"/gu, '\\"')}");`,
+		`  if (typeof __tool !== "function") throw new Error("Tool not found: " + ${JSON.stringify(toolId)});`,
 		`  return await __tool(${JSON.stringify(args)});`,
 		'}'
 	].join('\n');
