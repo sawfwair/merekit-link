@@ -39,6 +39,8 @@ function command(
 		risk?: CommandRisk;
 		supportsJson?: boolean;
 		supportsData?: boolean;
+		requiresYes?: boolean;
+		requiresConfirm?: boolean;
 		positionals?: string[];
 		flags?: string[];
 		auditDefault?: boolean;
@@ -52,8 +54,8 @@ function command(
 		risk: options.risk ?? 'read',
 		supportsJson: options.supportsJson ?? true,
 		supportsData: options.supportsData ?? false,
-		requiresYes: false,
-		requiresConfirm: false,
+		requiresYes: options.requiresYes ?? false,
+		requiresConfirm: options.requiresConfirm ?? false,
 		positionals: options.positionals ?? [],
 		flags: options.flags ?? [],
 		...(options.auditDefault ? { auditDefault: true } : {})
@@ -110,6 +112,7 @@ export const MANIFEST_COMMANDS: ManifestCommand[] = [
 	}),
 	command(['executor', 'policy', 'apply'], 'Apply compiled Link policy rules to the configured Executor runtime.', {
 		risk: 'write',
+		requiresYes: true,
 		flags: ['config', 'executor-base-url', 'executor-token-env', 'executor-scope', 'yes', 'json']
 	}),
 	command(['executor', 'invoke'], 'Invoke an Executor tool through Link read/write policy gates.', {
