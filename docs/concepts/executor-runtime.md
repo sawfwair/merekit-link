@@ -6,6 +6,11 @@ The core Link commands work without Executor. The `mere-link executor ...` comma
 
 Executor owns tool discovery, schemas, approvals, auth, and invocation for external systems. Link owns graph identity and write policy.
 
+Link supports both Executor runtime shapes currently in use:
+
+- Scoped runtimes with `/api/scope` and `/api/scopes/:scope/...`.
+- Current unscoped runtimes with `/api/tools` and core policy tools invoked through `/api/executions`.
+
 That split keeps the public package small:
 
 - `@merekit/link` does not bundle Executor.

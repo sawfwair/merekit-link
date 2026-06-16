@@ -1,6 +1,6 @@
 # Executor Commands
 
-Executor commands talk to an Executor-compatible HTTP runtime.
+Executor commands talk to an Executor-compatible HTTP runtime. Link supports scoped runtimes and current unscoped runtimes that expose `/api/tools`.
 
 ## Sources
 
@@ -8,7 +8,7 @@ Executor commands talk to an Executor-compatible HTTP runtime.
 mere-link executor sources --executor-base-url http://127.0.0.1:4788 --json
 ```
 
-Lists sources registered in the configured runtime scope.
+Lists sources registered in the configured runtime. On unscoped runtimes, Link derives source rows from the advertised tool integrations.
 
 ## Search Tools
 
@@ -24,7 +24,7 @@ Search matches tool id, plugin id, source id, name, and description.
 mere-link executor tools describe github.issues.create --json
 ```
 
-Returns tool metadata and schema from Executor.
+Returns tool metadata and schema from Executor. If the runtime does not expose a separate schema endpoint, the advertised tool metadata is returned as the schema payload.
 
 ## Compile Policy
 

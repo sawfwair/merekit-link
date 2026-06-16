@@ -98,6 +98,7 @@ type FakeExecutorCall = {
 };
 
 type FakeExecutorOptions = {
+	mode?: 'scoped' | 'modern';
 	sources?: unknown;
 	tools?: unknown;
 	policies?: unknown;
@@ -187,6 +188,15 @@ function writeResponse(res: ServerResponse, status: number, value: unknown): voi
 	res.end(JSON.stringify(value));
 }
 
+function writeExecutionResponse(res: ServerResponse, value: unknown): void {
+	writeResponse(res, 200, {
+		status: 'completed',
+		text: JSON.stringify(value, null, 2),
+		structured: { status: 'completed', result: value, logs: [] },
+		isError: false
+	});
+}
+
 async function startFakeExecutor(options: FakeExecutorOptions = {}): Promise<{ baseUrl: string; calls: FakeExecutorCall[]; close: () => Promise<void> }> {
 	const calls: FakeExecutorCall[] = [];
 	const policies: Array<{ id: string; scopeId: string; pattern: string; action: string; position: string; createdAt: number; updatedAt: number }> = [
@@ -197,6 +207,42 @@ async function startFakeExecutor(options: FakeExecutorOptions = {}): Promise<{ b
 			const url = new URL(req.url ?? '/', 'http://127.0.0.1');
 			const data = await readRequestJson(req);
 			calls.push({ method: req.method ?? 'GET', path: url.pathname, authorization: req.headers.authorization ?? null, data });
+			if (options.mode === 'modern') {
+				if (req.method === 'GET' && url.pathname === '/api/tools') {
+					writeResponse(res, 200, options.tools ?? [
+						{ address: 'monday.workspace.items.update', integration: 'monday', connection: 'workspace', pluginId: 'mcp/monday', name: 'workspace.items.update', description: 'Update a Monday item' },
+						{ address: 'sharepoint.docs.files.upload', integration: 'sharepoint', connection: 'docs', pluginId: 'mcp/microsoft-365', name: 'docs.files.upload', description: 'Upload a SharePoint file' }
+					]);
+					return;
+				}
+				if (req.method === 'POST' && url.pathname === '/api/executions') {
+					const code = typeof data?.code === 'string' ? data.code : '';
+					if (code.includes('coreTools.policies.list')) {
+						writeExecutionResponse(res, { ok: true, data: { policies: options.policies ?? policies } });
+						return;
+					}
+					if (code.includes('coreTools.policies.create')) {
+						const pattern = /"pattern":"([^"]+)"/u.exec(code)?.[1] ?? 'unknown.*';
+						const action = /"action":"([^"]+)"/u.exec(code)?.[1] ?? 'approve';
+						const policy = {
+							id: `pol_${policies.length + 1}`,
+							scopeId: 'unscoped',
+							pattern,
+							action,
+							position: `a${policies.length + 1}`,
+							createdAt: 2,
+							updatedAt: 2
+						};
+						policies.push(policy);
+						writeExecutionResponse(res, { ok: true, data: { policy } });
+						return;
+					}
+					writeExecutionResponse(res, { ok: true });
+					return;
+				}
+				writeResponse(res, 404, { error: `not found: ${req.method ?? 'GET'} ${url.pathname}` });
+				return;
+			}
 			if (req.method === 'GET' && url.pathname === '/api/scope') {
 				writeResponse(res, 200, { id: 'scope_default', name: 'Default', dir: process.cwd(), stack: [] });
 				return;
@@ -849,6 +895,56 @@ entities:
 		assert.equal(applied.result.scopeId, 'scope_default');
 		assert.ok(applied.result.skipped.some((policy) => policy.pattern === 'monday.*' && policy.action === 'approve'));
 		assert.ok(applied.result.created.some((policy) => policy.pattern === 'monday.items.update' && policy.action === 'require_approval'));
+	} finally {
+		await fake.close();
+	}
+});
+
+test('uses the modern Executor runtime boundary when scoped endpoints are absent', async () => {
+	const fake = await startFakeExecutor({ mode: 'modern' });
+	try {
+		const dir = await tempDir();
+		const configPath = path.join(dir, 'mere.link.yaml');
+		await writeFile(configPath, `schemaVersion: 1
+integrations:
+  executor:
+    plugin: executor
+    baseUrl: ${fake.baseUrl}
+  monday:
+    plugin: executor
+    namespace: monday
+entities:
+  example-org:
+    name: Example Organization
+    projects:
+      rollout:
+        name: Rollout
+        surfaces:
+          planning:
+            integration: monday
+            kind: board
+            id: "1234567890"
+            policy:
+              writes: [sync]
+`, 'utf8');
+
+		const sources = parseJson<Array<{ id: string; toolCount: number }>>(await runAsync(['executor', 'sources', '--executor-base-url', fake.baseUrl, '--json']));
+		assert.equal(sources.find((source) => source.id === 'monday')?.toolCount, 1);
+
+		const search = parseJson<ExecutorSearchResult>(await runAsync(['executor', 'tools', 'search', 'monday item', '--executor-base-url', fake.baseUrl, '--json']));
+		assert.equal(search.count, 1);
+		assert.equal(search.tools[0]?.id, 'monday.workspace.items.update');
+
+		const describe = parseJson<{ schema: { id: string; integration: string } }>(await runAsync(['executor', 'tools', 'describe', 'monday.workspace.items.update', '--executor-base-url', fake.baseUrl, '--json']));
+		assert.equal(describe.schema.id, 'monday.workspace.items.update');
+		assert.equal(describe.schema.integration, 'monday');
+
+		const applied = parseJson<ExecutorApplyResult>(await runAsync(['executor', 'policy', 'apply', '--config', configPath, '--executor-base-url', fake.baseUrl, '--yes', '--json']));
+		assert.equal(applied.result.scopeId, 'unscoped');
+		assert.ok(applied.result.skipped.some((policy) => policy.pattern === 'monday.*' && policy.action === 'approve'));
+		assert.ok(applied.result.created.some((policy) => policy.pattern === 'monday.items.update' && policy.action === 'require_approval'));
+		assert.ok(fake.calls.some((call) => call.path === '/api/tools'));
+		assert.ok(fake.calls.some((call) => call.method === 'POST' && call.path === '/api/executions'));
 	} finally {
 		await fake.close();
 	}

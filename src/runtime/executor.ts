@@ -28,6 +28,22 @@ type ExecutorRequestOptions = {
 
 type BaseUrlSource = 'flag' | 'config' | 'env' | 'default';
 
+class ExecutorRequestError extends Error {
+	readonly method: string;
+	readonly path: string;
+	readonly status: number;
+	readonly detail: string;
+
+	constructor(method: string, path: string, status: number, detail: string) {
+		super(`Executor ${method} ${path} failed: ${detail}`);
+		this.name = 'ExecutorRequestError';
+		this.method = method;
+		this.path = path;
+		this.status = status;
+		this.detail = detail;
+	}
+}
+
 function normalizeBaseUrl(value: string): string {
 	return value.replace(/\/+$/u, '');
 }
@@ -79,21 +95,26 @@ export function executorRuntime(flags: Flags, config?: LinkConfigFile): Executor
 }
 
 async function requestJson(runtime: ExecutorRuntime, path: string, options: ExecutorRequestOptions = {}): Promise<unknown> {
+	const method = options.method ?? 'GET';
 	const headers: Record<string, string> = { accept: 'application/json' };
 	if (options.body) headers['content-type'] = 'application/json';
 	if (runtime.token) headers.authorization = `Bearer ${runtime.token}`;
 	const response = await fetch(`${runtime.baseUrl}${path}`, {
-		method: options.method ?? 'GET',
+		method,
 		headers,
 		...(options.body ? { body: JSON.stringify(options.body) } : {})
 	});
 	const body = await response.text();
 	if (!response.ok) {
 		const detail = body.trim() ? body.trim() : `${response.status} ${response.statusText}`;
-		throw new Error(`Executor ${options.method ?? 'GET'} ${path} failed: ${detail}`);
+		throw new ExecutorRequestError(method, path, response.status, detail);
 	}
 	if (!body.trim()) return null;
 	return parseJson(body, `Executor ${path}`);
+}
+
+function isNotFound(error: unknown): boolean {
+	return error instanceof ExecutorRequestError && error.status === 404;
 }
 
 function scopeIdFromInfo(value: unknown): string {
@@ -166,6 +187,26 @@ function decodeExecutorTool(value: unknown, label: string): ExecutorTool {
 	};
 }
 
+function decodeModernExecutorTool(value: unknown, label: string): ExecutorTool {
+	const record = asRecord(value, label);
+	const address = readOptionalResponseString(record, 'address', label) ?? readOptionalResponseString(record, 'path', label) ?? readOptionalResponseString(record, 'id', label);
+	if (!address) throw new Error(`${label}.address is required.`);
+	const integration = readOptionalResponseString(record, 'integration', label);
+	const connection = readOptionalResponseString(record, 'connection', label);
+	const pluginId = readOptionalResponseString(record, 'pluginId', label) ?? integration;
+	const sourceId = integration ?? connection;
+	const name = readOptionalResponseString(record, 'name', label);
+	const description = readOptionalResponseString(record, 'description', label);
+	return {
+		...record,
+		id: address,
+		...(pluginId ? { pluginId } : {}),
+		...(sourceId ? { sourceId } : {}),
+		...(name ? { name } : {}),
+		...(description ? { description } : {})
+	};
+}
+
 function decodeExecutorToolDescription(value: unknown, label: string): ExecutorToolDescription {
 	const record = asRecord(value, label);
 	if (record.id !== undefined && record.id !== null) readOptionalResponseString(record, 'id', label);
@@ -185,14 +226,49 @@ function decodeExecutorPolicy(value: unknown, label: string): ExecutorPolicy {
 	};
 }
 
+function decodeModernTools(value: unknown): ExecutorTool[] {
+	const items = Array.isArray(value) ? value : asArray(asRecord(value, 'Executor tools').items, 'Executor tools.items');
+	return items.map((item, index) => decodeModernExecutorTool(item, `Executor tools[${index}]`));
+}
+
+function sourcesFromTools(tools: ExecutorTool[]): ExecutorSource[] {
+	const sources = new Map<string, ExecutorSource & { toolCount: number }>();
+	for (const tool of tools) {
+		const record = asRecord(tool, 'Executor tool');
+		const integration = readOptionalResponseString(record, 'integration', 'Executor tool') ?? text(tool.sourceId) ?? text(tool.pluginId);
+		if (!integration) continue;
+		const source = sources.get(integration) ?? {
+			id: integration,
+			name: integration,
+			kind: text(tool.pluginId) || 'runtime',
+			toolCount: 0
+		};
+		source.toolCount += 1;
+		sources.set(integration, source);
+	}
+	return [...sources.values()];
+}
+
 export async function listExecutorSources(flags: Flags, config?: LinkConfigFile): Promise<ExecutorSource[]> {
-	const runtime = await runtimeWithScope(flags, config);
-	return decodeResponseArray(await requestJson(runtime, scopedPath(runtime.scopeId, '/sources')), 'Executor sources', decodeExecutorSource);
+	try {
+		const runtime = await runtimeWithScope(flags, config);
+		return decodeResponseArray(await requestJson(runtime, scopedPath(runtime.scopeId, '/sources')), 'Executor sources', decodeExecutorSource);
+	} catch (error) {
+		if (!isNotFound(error)) throw error;
+		const runtime = executorRuntime(flags, config);
+		const tools = decodeModernTools(await requestJson(runtime, '/api/tools'));
+		return sourcesFromTools(tools);
+	}
 }
 
 export async function listExecutorTools(flags: Flags, config?: LinkConfigFile): Promise<ExecutorTool[]> {
-	const runtime = await runtimeWithScope(flags, config);
-	return decodeResponseArray(await requestJson(runtime, scopedPath(runtime.scopeId, '/tools')), 'Executor tools', decodeExecutorTool);
+	try {
+		const runtime = await runtimeWithScope(flags, config);
+		return decodeResponseArray(await requestJson(runtime, scopedPath(runtime.scopeId, '/tools')), 'Executor tools', decodeExecutorTool);
+	} catch (error) {
+		if (!isNotFound(error)) throw error;
+		return decodeModernTools(await requestJson(executorRuntime(flags, config), '/api/tools'));
+	}
 }
 
 function text(value: unknown): string {
@@ -215,21 +291,112 @@ export async function searchExecutorTools(flags: Flags, query: string, config?: 
 }
 
 export async function describeExecutorTool(flags: Flags, toolId: string, config?: LinkConfigFile): Promise<JsonRecord> {
-	const runtime = await runtimeWithScope(flags, config);
-	const schema = decodeExecutorToolDescription(
-		await requestJson(runtime, scopedPath(runtime.scopeId, `/tools/${encodeURIComponent(toolId)}/schema`)),
-		'Executor tool schema'
-	);
 	const metadata = (await listExecutorTools(flags, config)).find((tool) => tool.id === toolId);
+	try {
+		const runtime = await runtimeWithScope(flags, config);
+		const schema = decodeExecutorToolDescription(
+			await requestJson(runtime, scopedPath(runtime.scopeId, `/tools/${encodeURIComponent(toolId)}/schema`)),
+			'Executor tool schema'
+		);
+		return {
+			tool: metadata ?? { id: toolId },
+			schema
+		};
+	} catch (error) {
+		if (!isNotFound(error)) throw error;
+	}
 	return {
 		tool: metadata ?? { id: toolId },
-		schema
+		schema: metadata ?? { id: toolId }
 	};
 }
 
+function executionFailure(value: JsonRecord, label: string): string {
+	const textValue = readOptionalResponseString(value, 'text', label);
+	if (textValue) return textValue;
+	const errorValue = value.error;
+	if (errorValue instanceof Error) return errorValue.message;
+	if (typeof errorValue === 'string' && errorValue.trim()) return errorValue.trim();
+	return `${label} failed.`;
+}
+
+function unwrapExecutorExecution(value: unknown, label: string): unknown {
+	const record = asRecord(value, label);
+	if (record.isError === true || record.status === 'failed' || record.status === 'error') throw new Error(executionFailure(record, label));
+	const structured = record.structured;
+	if (structured !== undefined && structured !== null) {
+		const structuredRecord = asRecord(structured, `${label}.structured`);
+		if (structuredRecord.result !== undefined) return structuredRecord.result;
+		return structuredRecord;
+	}
+	const textValue = readOptionalResponseString(record, 'text', label);
+	if (textValue) return parseJson(textValue, `${label}.text`);
+	return record;
+}
+
+async function executeExecutorAddress(runtime: ExecutorRuntime, toolId: string, args: JsonRecord): Promise<JsonRecord> {
+	const access = toolAccess(toolId);
+	const code = [
+		'async () => {',
+		`  const __tool = tools${access};`,
+		`  if (typeof __tool !== "function") throw new Error("Tool not found: " + ${JSON.stringify(toolId)});`,
+		`  return await __tool(${JSON.stringify(args)});`,
+		'}'
+	].join('\n');
+	return asRecord(await requestJson(runtime, '/api/executions', {
+		method: 'POST',
+		body: { code }
+	}), 'Executor execution response');
+}
+
+async function executeExecutorCorePolicy(runtime: ExecutorRuntime, action: 'list' | 'create', args: JsonRecord): Promise<unknown> {
+	return unwrapExecutorExecution(await executeExecutorAddress(runtime, `executor.coreTools.policies.${action}`, args), `Executor policies.${action} execution`);
+}
+
+function modernPoliciesFromResult(value: unknown): unknown {
+	const record = asRecord(value, 'Executor policy result');
+	if (record.policies !== undefined) return record.policies;
+	if (record.data !== undefined && record.data !== null) {
+		const data = asRecord(record.data, 'Executor policy result.data');
+		if (data.policies !== undefined) return data.policies;
+	}
+	return [];
+}
+
+function modernPolicyFromCreateResult(value: unknown): unknown {
+	const record = asRecord(value, 'Executor policy create result');
+	if (record.pattern !== undefined || record.action !== undefined) return record;
+	if (record.policy !== undefined) return record.policy;
+	if (record.data !== undefined && record.data !== null) {
+		const data = asRecord(record.data, 'Executor policy create result.data');
+		if (data.policy !== undefined) return data.policy;
+		if (data.pattern !== undefined || data.action !== undefined) return data;
+	}
+	return record;
+}
+
+async function listModernExecutorPolicies(runtime: ExecutorRuntime): Promise<ExecutorPolicy[]> {
+	const result = await executeExecutorCorePolicy(runtime, 'list', {});
+	return decodeResponseArray(modernPoliciesFromResult(result), 'Executor policies', decodeExecutorPolicy);
+}
+
+async function createModernExecutorPolicy(runtime: ExecutorRuntime, rule: ExecutorPolicyRule): Promise<ExecutorPolicy> {
+	const result = await executeExecutorCorePolicy(runtime, 'create', {
+		owner: 'org',
+		pattern: rule.pattern,
+		action: rule.action
+	});
+	return decodeExecutorPolicy(modernPolicyFromCreateResult(result), 'Executor policy create response');
+}
+
 export async function listExecutorPolicies(flags: Flags, config?: LinkConfigFile): Promise<ExecutorPolicy[]> {
-	const runtime = await runtimeWithScope(flags, config);
-	return decodeResponseArray(await requestJson(runtime, scopedPath(runtime.scopeId, '/policies')), 'Executor policies', decodeExecutorPolicy);
+	try {
+		const runtime = await runtimeWithScope(flags, config);
+		return decodeResponseArray(await requestJson(runtime, scopedPath(runtime.scopeId, '/policies')), 'Executor policies', decodeExecutorPolicy);
+	} catch (error) {
+		if (!isNotFound(error)) throw error;
+		return listModernExecutorPolicies(executorRuntime(flags, config));
+	}
 }
 
 function policyIdentity(policy: ExecutorPolicy): string {
@@ -255,8 +422,51 @@ function conflictingPolicies(existing: ExecutorPolicy[], plan: ExecutorPolicyPla
 }
 
 export async function applyExecutorPolicy(flags: Flags, config: LinkConfigFile, plan: ExecutorPolicyPlan): Promise<JsonRecord> {
-	const runtime = await runtimeWithScope(flags, config);
-	const existing = await listExecutorPolicies(flags, config);
+	try {
+		const runtime = await runtimeWithScope(flags, config);
+		const existing = decodeResponseArray(await requestJson(runtime, scopedPath(runtime.scopeId, '/policies')), 'Executor policies', decodeExecutorPolicy);
+		const conflicts = conflictingPolicies(existing, plan);
+		if (conflicts.length > 0) {
+			const detail = conflicts
+				.map((policy) => `${String(policy.pattern)} currently ${String(policy.action)}`)
+				.join('; ');
+			throw new Error(`Executor policy apply refused because existing runtime policies conflict with compiled Link policy: ${detail}. Remove stale runtime policies and re-run apply.`);
+		}
+		const existingIdentities = new Set(existing.map(policyIdentity));
+		const created: JsonRecord[] = [];
+		const skipped: JsonRecord[] = [];
+
+		for (const rule of executorPolicyRules(plan)) {
+			const identity = `${rule.pattern}:${rule.action}`;
+			if (existingIdentities.has(identity)) {
+				skipped.push({ pattern: rule.pattern, action: rule.action, reason: 'already-exists' });
+				continue;
+			}
+			const result = decodeExecutorPolicy(await requestJson(runtime, scopedPath(runtime.scopeId, '/policies'), {
+				method: 'POST',
+				body: {
+					targetScope: runtime.scopeId,
+					pattern: rule.pattern,
+					action: rule.action
+				}
+			}), 'Executor policy create response');
+			created.push(result);
+			existingIdentities.add(identity);
+		}
+
+		return {
+			ok: true,
+			scopeId: runtime.scopeId,
+			created,
+			skipped,
+			planned: executorPolicyRules(plan).length
+		};
+	} catch (error) {
+		if (!isNotFound(error)) throw error;
+	}
+
+	const runtime = executorRuntime(flags, config);
+	const existing = await listModernExecutorPolicies(runtime);
 	const conflicts = conflictingPolicies(existing, plan);
 	if (conflicts.length > 0) {
 		const detail = conflicts
@@ -274,21 +484,15 @@ export async function applyExecutorPolicy(flags: Flags, config: LinkConfigFile, 
 			skipped.push({ pattern: rule.pattern, action: rule.action, reason: 'already-exists' });
 			continue;
 		}
-		const result = decodeExecutorPolicy(await requestJson(runtime, scopedPath(runtime.scopeId, '/policies'), {
-			method: 'POST',
-			body: {
-				targetScope: runtime.scopeId,
-				pattern: rule.pattern,
-				action: rule.action
-			}
-		}), 'Executor policy create response');
+		const result = await createModernExecutorPolicy(runtime, rule);
 		created.push(result);
 		existingIdentities.add(identity);
 	}
 
 	return {
 		ok: true,
-		scopeId: runtime.scopeId,
+		scopeId: 'unscoped',
+		runtime: 'modern',
 		created,
 		skipped,
 		planned: executorPolicyRules(plan).length
@@ -303,16 +507,5 @@ function toolAccess(toolId: string): string {
 
 export async function invokeExecutorTool(flags: Flags, config: LinkConfigFile, toolId: string, args: JsonRecord): Promise<JsonRecord> {
 	const runtime = executorRuntime(flags, config);
-	const access = toolAccess(toolId);
-	const code = [
-		'async () => {',
-		`  const __tool = tools${access};`,
-		`  if (typeof __tool !== "function") throw new Error("Tool not found: " + ${JSON.stringify(toolId)});`,
-		`  return await __tool(${JSON.stringify(args)});`,
-		'}'
-	].join('\n');
-	return asRecord(await requestJson(runtime, '/api/executions', {
-		method: 'POST',
-		body: { code }
-	}), 'Executor execution response');
+	return executeExecutorAddress(runtime, toolId, args);
 }

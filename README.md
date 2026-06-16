@@ -25,7 +25,7 @@ npm install -g executor
 executor web
 ```
 
-Executor's default local runtime is `http://127.0.0.1:4788`. Link defaults to `http://localhost:4788`, and you can override it with either config or flags:
+Executor's default local runtime is `http://127.0.0.1:4788`. Link defaults to `http://localhost:4788`, supports both scoped and current unscoped Executor runtimes, and can be overridden with either config or flags:
 
 ```yaml
 integrations:
