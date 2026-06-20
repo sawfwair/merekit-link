@@ -145,6 +145,12 @@ entities:
             id: mere-run
             policy:
               writes: [create, message]
+          psi-model:
+            integration: localai
+            kind: model
+            id: psi
+            policy:
+              writes: [message]
           imessage-line:
             integration: imessage
             kind: source

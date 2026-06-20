@@ -235,12 +235,17 @@ function resourceGuard(entry: SurfaceEntry): ResourceGuard | null {
 			]
 		};
 	}
-	if (entry.namespace === 'localai' && ['source', 'namespace'].includes(entry.surface.kind)) {
+	if (entry.namespace === 'localai' && ['source', 'namespace', 'model'].includes(entry.surface.kind)) {
 		return {
 			label: `${entry.path} capability`,
 			anyOf: [
 				argumentEquals('capabilityId', id),
 				argumentEquals('capability_id', id),
+				argumentEquals('model', id),
+				argumentEquals('modelId', id),
+				argumentEquals('model_id', id),
+				argumentEquals('input.model', id),
+				argumentEquals('request.model', id),
 				argumentEquals('source', id),
 				argumentEquals('runtime', id)
 			]
@@ -359,7 +364,16 @@ function broadInvocationSurface(entry: SurfaceEntry, toolId: string): boolean {
 	return entry.surface.kind === 'namespace' || entry.surface.kind === 'source';
 }
 
+function localAiModelDiscoveryRead(entry: SurfaceEntry, toolId: string): boolean {
+	return (
+		entry.namespace === 'localai' &&
+		['source', 'namespace'].includes(entry.surface.kind) &&
+		(toolId === 'localai.models.list' || toolId === 'localai.models.retrieve')
+	);
+}
+
 function guardedEntryMatches(entry: SurfaceEntry, toolId: string, args: JsonRecord): boolean {
+	if (localAiModelDiscoveryRead(entry, toolId)) return true;
 	const guard = resourceGuard(entry);
 	if (guard) return resourceGuardMatches(args, guard);
 	return broadInvocationSurface(entry, toolId);

@@ -6,6 +6,9 @@ import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { test } from 'node:test';
+import { normalizeConfig } from '../src/config/normalize.js';
+import { assertExecutorInvocationAllowed } from '../src/sync/executor-policy.js';
+import { parseYaml } from '../src/runtime/yaml.js';
 
 type RunOptions = {
 	cwd?: string;
@@ -438,6 +441,12 @@ entities:
             id: mere-run
             policy:
               writes: [create, message]
+          psi-model:
+            integration: localai
+            kind: model
+            id: psi
+            policy:
+              writes: [message]
 `, 'utf8');
 
 	const plan = parseJson<ExecutorPolicyCompileResult>(run(['executor', 'policy', 'compile', '--config', configPath, '--json']));
@@ -454,6 +463,21 @@ entities:
 	assert.ok(localChat?.resourceGuards.some((guard) =>
 		guard.anyOf.some((predicate) => predicate.path === 'capability_id' && predicate.value === 'mere-run')
 	));
+	assert.ok(localChat?.resourceGuards.some((guard) =>
+		guard.anyOf.some((predicate) => predicate.path === 'model' && predicate.value === 'psi')
+	));
+
+	const config = normalizeConfig(parseYaml(await readFile(configPath, 'utf8'), configPath), configPath);
+	const modelListRead = assertExecutorInvocationAllowed(config, 'read', 'localai.models.list', {}, false);
+	assert.ok(modelListRead.targets.some((target) => target.surface.endsWith(':ai')));
+	const modelRetrieveRead = assertExecutorInvocationAllowed(config, 'read', 'localai.models.retrieve', { modelId: 'text-chat-gemma4-turbo' }, false);
+	assert.ok(modelRetrieveRead.targets.some((target) => target.surface.endsWith(':ai')));
+	const modelWrite = assertExecutorInvocationAllowed(config, 'write', 'localai.chat.completions.create', { model: 'psi' }, true);
+	assert.ok(modelWrite.targets.some((target) => target.surface.endsWith(':psi-model')));
+	assert.throws(
+		() => assertExecutorInvocationAllowed(config, 'write', 'localai.chat.completions.create', { model: 'not-declared' }, true),
+		/Arguments for localai\.chat\.completions\.create do not match/
+	);
 });
 
 test('validates Executor-backed Monday and SharePoint surfaces and compiles policy', async () => {

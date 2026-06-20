@@ -4,7 +4,7 @@ export const WRITES = ['create', 'update', 'delete', 'comment', 'message', 'book
 
 export const PLUGINS: Record<string, PluginDefinition> = {
 	mere: { kinds: ['workspace', 'app', 'record', 'link'], writes: ['sync'] },
-	executor: { kinds: ['source', 'namespace', 'tool', 'board', 'site', 'list', 'repo', 'channel', 'record', 'link', 'document'], writes: WRITES },
+	executor: { kinds: ['source', 'namespace', 'tool', 'board', 'site', 'list', 'repo', 'channel', 'record', 'link', 'document', 'model'], writes: WRITES },
 	url: { kinds: ['link', 'document'], writes: [] },
 	local: { kinds: ['file', 'directory'], writes: ['create', 'update', 'delete'] },
 	generic: { kinds: ['workspace', 'app', 'project', 'repo', 'channel', 'board', 'issue-tracker', 'document', 'link', 'file', 'directory'], writes: WRITES }

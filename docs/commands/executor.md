@@ -58,6 +58,12 @@ entities:
             id: mere-run
             policy:
               writes: [create, message]
+          psi-model:
+            integration: localai
+            kind: model
+            id: psi
+            policy:
+              writes: [message]
           imessage-line:
             integration: imessage
             kind: source
@@ -66,7 +72,7 @@ entities:
               writes: [message]
 ```
 
-`imessage` writes guard line arguments such as `line_id` or `capability_id`. `localai` writes guard the declared runtime capability id, such as `mere-run`.
+`imessage` writes guard line arguments such as `line_id` or `capability_id`. `localai` runtime surfaces guard the declared runtime capability id, such as `mere-run`; model surfaces guard model arguments such as `model`, `modelId`, or `input.model`.
 
 ## Apply Policy
 
