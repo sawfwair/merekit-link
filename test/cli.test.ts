@@ -406,6 +406,56 @@ entities:
 	assert.ok(plan.rules.some((rule) => rule.pattern === 'slack.messages.send' && rule.action === 'require_approval'));
 });
 
+test('compiles Relay-backed iMessage and local AI write policy with resource guards', async () => {
+	const dir = await tempDir();
+	const configPath = path.join(dir, 'mere.link.yaml');
+	await writeFile(configPath, `schemaVersion: 1
+integrations:
+  executor:
+    plugin: executor
+  imessage:
+    plugin: executor
+    namespace: imessage
+  localai:
+    plugin: executor
+    namespace: localai
+entities:
+  personal:
+    name: Personal Workspace
+    projects:
+      relay:
+        name: Relay
+        surfaces:
+          messages:
+            integration: imessage
+            kind: source
+            id: default
+            policy:
+              writes: [message]
+          ai:
+            integration: localai
+            kind: source
+            id: mere-run
+            policy:
+              writes: [create, message]
+`, 'utf8');
+
+	const plan = parseJson<ExecutorPolicyCompileResult>(run(['executor', 'policy', 'compile', '--config', configPath, '--json']));
+	const imessageSend = plan.rules.find((rule) => rule.pattern === 'imessage.messages.send');
+	assert.equal(imessageSend?.action, 'require_approval');
+	assert.equal(imessageSend?.enforcement, 'executor-and-link');
+	assert.ok(imessageSend?.resourceGuards.some((guard) =>
+		guard.anyOf.some((predicate) => predicate.path === 'line_id' && predicate.value === 'default')
+	));
+
+	const localChat = plan.rules.find((rule) => rule.pattern === 'localai.chat.completions.create');
+	assert.equal(localChat?.action, 'require_approval');
+	assert.equal(localChat?.enforcement, 'executor-and-link');
+	assert.ok(localChat?.resourceGuards.some((guard) =>
+		guard.anyOf.some((predicate) => predicate.path === 'capability_id' && predicate.value === 'mere-run')
+	));
+});
+
 test('validates Executor-backed Monday and SharePoint surfaces and compiles policy', async () => {
 	const dir = await tempDir();
 	const configPath = path.join(dir, 'mere.link.yaml');

@@ -123,6 +123,36 @@ mere-link executor policy apply --config mere.link.yaml --yes --json
 Executor reads and writes through Link require a declared surface and matching resource arguments unless the config declares an explicit broad `namespace`, `source`, or exact `tool` surface. Writes also require compiled write policy and `--apply`.
 Compiled plans expose Link's local resource checks as `resourceGuards`, made from `ArgumentPredicate` entries such as `boardId equals <declared board>`.
 
+Relay-backed local capabilities use the same pattern. A Mac or local AI node can be declared as Executor namespaces while Relay owns the live outbound tunnel:
+
+```yaml
+integrations:
+  localai:
+    plugin: executor
+    namespace: localai
+  imessage:
+    plugin: executor
+    namespace: imessage
+
+entities:
+  personal:
+    projects:
+      relay:
+        surfaces:
+          local-ai:
+            integration: localai
+            kind: source
+            id: mere-run
+            policy:
+              writes: [create, message]
+          imessage-line:
+            integration: imessage
+            kind: source
+            id: default
+            policy:
+              writes: [message]
+```
+
 ## YAML Shape
 
 ```yaml

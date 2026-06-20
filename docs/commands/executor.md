@@ -36,6 +36,38 @@ Compiled rules approve reads for declared namespaces, block known writes by defa
 
 Writable resource surfaces include Link-side `resourceGuards`, built from `ArgumentPredicate` entries over invocation arguments.
 
+Relay-backed local capabilities compile like any other Executor namespace. For example:
+
+```yaml
+integrations:
+  localai:
+    plugin: executor
+    namespace: localai
+  imessage:
+    plugin: executor
+    namespace: imessage
+
+entities:
+  personal:
+    projects:
+      relay:
+        surfaces:
+          local-ai:
+            integration: localai
+            kind: source
+            id: mere-run
+            policy:
+              writes: [create, message]
+          imessage-line:
+            integration: imessage
+            kind: source
+            id: default
+            policy:
+              writes: [message]
+```
+
+`imessage` writes guard line arguments such as `line_id` or `capability_id`. `localai` writes guard the declared runtime capability id, such as `mere-run`.
+
 ## Apply Policy
 
 ```sh

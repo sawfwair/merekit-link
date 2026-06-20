@@ -38,6 +38,21 @@ const EXECUTOR_WRITE_PATTERNS: Record<string, string[]> = {
 		'sharepoint.lists.items.update',
 		'sharepoint.lists.items.delete'
 	],
+	imessage: [
+		'imessage.messages.send',
+		'imessage.messages.reply',
+		'imessage.messages.react',
+		'imessage.messages.unsend',
+		'imessage.groups.update'
+	],
+	localai: [
+		'localai.chat.completions.create',
+		'localai.responses.create',
+		'localai.embeddings.create',
+		'localai.images.generate',
+		'localai.audio.speech.create',
+		'localai.audio.transcriptions.create'
+	],
 	slack: [
 		'slack.messages.send',
 		'slack.bookmarks.create',
@@ -69,6 +84,16 @@ const EXECUTOR_WRITE_PATTERNS_BY_WRITE: Record<string, Partial<Record<string, st
 		update: ['sharepoint.files.update', 'sharepoint.pages.update', 'sharepoint.lists.items.update'],
 		delete: ['sharepoint.files.delete', 'sharepoint.pages.delete', 'sharepoint.lists.items.delete'],
 		sync: EXECUTOR_WRITE_PATTERNS.sharepoint
+	},
+	imessage: {
+		message: ['imessage.messages.send', 'imessage.messages.reply', 'imessage.messages.react', 'imessage.messages.unsend'],
+		update: ['imessage.groups.update'],
+		sync: EXECUTOR_WRITE_PATTERNS.imessage
+	},
+	localai: {
+		create: EXECUTOR_WRITE_PATTERNS.localai,
+		message: ['localai.chat.completions.create', 'localai.responses.create'],
+		sync: EXECUTOR_WRITE_PATTERNS.localai
 	},
 	slack: {
 		topic: ['slack.channels.setTopic'],
@@ -196,6 +221,29 @@ function resourceGuard(entry: SurfaceEntry): ResourceGuard | null {
 		return {
 			label: `${entry.path} channel`,
 			anyOf: [argumentEquals('channel', id), argumentEquals('channelId', id), argumentEquals('channel_id', id)]
+		};
+	}
+	if (entry.namespace === 'imessage' && ['source', 'channel', 'record'].includes(entry.surface.kind)) {
+		return {
+			label: `${entry.path} line`,
+			anyOf: [
+				argumentEquals('lineId', id),
+				argumentEquals('line_id', id),
+				argumentEquals('service', id),
+				argumentEquals('capabilityId', id),
+				argumentEquals('capability_id', id)
+			]
+		};
+	}
+	if (entry.namespace === 'localai' && ['source', 'namespace'].includes(entry.surface.kind)) {
+		return {
+			label: `${entry.path} capability`,
+			anyOf: [
+				argumentEquals('capabilityId', id),
+				argumentEquals('capability_id', id),
+				argumentEquals('source', id),
+				argumentEquals('runtime', id)
+			]
 		};
 	}
 	return null;
