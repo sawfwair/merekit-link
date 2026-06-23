@@ -34,7 +34,7 @@ mere-link executor policy compile --config mere.link.yaml --json
 
 Compiled rules approve reads for declared namespaces, block known writes by default, and require approval for writes granted by Link surface policy.
 
-Writable resource surfaces include Link-side `resourceGuards`, built from `ArgumentPredicate` entries over invocation arguments.
+Writable resource surfaces include `resourceGuards`, built from `ArgumentPredicate` entries over invocation arguments. Policy apply sends those guards to Executor and fails closed when an existing runtime policy has the same pattern/action but does not match the compiled guards.
 
 Relay-backed local capabilities compile like any other Executor namespace. For example:
 

@@ -54,7 +54,7 @@ export MERE_LINK_EXECUTOR_TOKEN=...
 mere-link executor sources --json
 ```
 
-You can also declare the token env var in config:
+For local runtimes, you can also declare the token env var in config:
 
 ```yaml
 integrations:
@@ -70,4 +70,4 @@ Or pass it at the command line:
 mere-link executor sources --executor-token-env EXAMPLE_EXECUTOR_TOKEN --json
 ```
 
-When a non-local Executor URL comes from `mere.link.yaml`, declare `tokenEnv` for that runtime. Link will not forward the global `MERE_LINK_EXECUTOR_TOKEN` to a non-local config URL.
+When a non-local Executor URL comes from `mere.link.yaml`, pass `--executor-token-env` after verifying the destination. Link will not forward either the global `MERE_LINK_EXECUTOR_TOKEN` or a config-selected `tokenEnv` to a non-local config URL.
