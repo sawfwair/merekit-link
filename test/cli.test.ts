@@ -100,6 +100,20 @@ type FakeExecutorCall = {
 	data: Record<string, unknown> | null;
 };
 
+type FakeExecutorPolicy = {
+	id: string;
+	scopeId: string;
+	pattern: string;
+	action: string;
+	position: string;
+	createdAt: number;
+	updatedAt: number;
+	reason?: string;
+	enforcement?: string;
+	surfaces?: unknown;
+	resourceGuards?: unknown;
+};
+
 type FakeExecutorOptions = {
 	mode?: 'scoped' | 'modern';
 	sources?: unknown;
@@ -200,9 +214,14 @@ function writeExecutionResponse(res: ServerResponse, value: unknown): void {
 	});
 }
 
+function readExecutionToolArgs(code: string): Record<string, unknown> {
+	const match = /return await __tool\((.+)\);/u.exec(code);
+	return match ? parseJson<Record<string, unknown>>(match[1] ?? '{}') : {};
+}
+
 async function startFakeExecutor(options: FakeExecutorOptions = {}): Promise<{ baseUrl: string; calls: FakeExecutorCall[]; close: () => Promise<void> }> {
 	const calls: FakeExecutorCall[] = [];
-	const policies: Array<{ id: string; scopeId: string; pattern: string; action: string; position: string; createdAt: number; updatedAt: number }> = [
+	const policies: FakeExecutorPolicy[] = [
 		{ id: 'pol_existing', scopeId: 'scope_default', pattern: 'monday.*', action: 'approve', position: 'a0', createdAt: 1, updatedAt: 1 }
 	];
 	const server = createServer((req, res) => {
@@ -225,13 +244,18 @@ async function startFakeExecutor(options: FakeExecutorOptions = {}): Promise<{ b
 						return;
 					}
 					if (code.includes('coreTools.policies.create')) {
-						const pattern = /"pattern":"([^"]+)"/u.exec(code)?.[1] ?? 'unknown.*';
-						const action = /"action":"([^"]+)"/u.exec(code)?.[1] ?? 'approve';
+						const args = readExecutionToolArgs(code);
+						const pattern = typeof args.pattern === 'string' ? args.pattern : 'unknown.*';
+						const action = typeof args.action === 'string' ? args.action : 'approve';
 						const policy = {
 							id: `pol_${policies.length + 1}`,
 							scopeId: 'unscoped',
 							pattern,
 							action,
+							...(typeof args.reason === 'string' ? { reason: args.reason } : {}),
+							...(typeof args.enforcement === 'string' ? { enforcement: args.enforcement } : {}),
+							...(Array.isArray(args.surfaces) ? { surfaces: args.surfaces } : {}),
+							...(Array.isArray(args.resourceGuards) ? { resourceGuards: args.resourceGuards } : {}),
 							position: `a${policies.length + 1}`,
 							createdAt: 2,
 							updatedAt: 2
@@ -276,6 +300,10 @@ async function startFakeExecutor(options: FakeExecutorOptions = {}): Promise<{ b
 					scopeId: 'scope_default',
 					pattern: String(record.pattern),
 					action: String(record.action),
+					...(typeof record.reason === 'string' ? { reason: record.reason } : {}),
+					...(typeof record.enforcement === 'string' ? { enforcement: record.enforcement } : {}),
+					...(Array.isArray(record.surfaces) ? { surfaces: record.surfaces } : {}),
+					...(Array.isArray(record.resourceGuards) ? { resourceGuards: record.resourceGuards } : {}),
 					position: `a${policies.length + 1}`,
 					createdAt: 2,
 					updatedAt: 2
@@ -969,6 +997,12 @@ entities:
 		assert.equal(applied.result.scopeId, 'scope_default');
 		assert.ok(applied.result.skipped.some((policy) => policy.pattern === 'monday.*' && policy.action === 'approve'));
 		assert.ok(applied.result.created.some((policy) => policy.pattern === 'monday.items.update' && policy.action === 'require_approval'));
+		const createPolicyCall = fake.calls.find((call) => call.method === 'POST' && call.path === '/api/scopes/scope_default/policies' && call.data?.pattern === 'monday.items.update');
+		assert.equal(createPolicyCall?.data?.enforcement, 'executor-and-link');
+		assert.ok(Array.isArray(createPolicyCall?.data?.resourceGuards));
+		assert.ok((createPolicyCall.data.resourceGuards as Array<{ anyOf: Array<{ path: string; value: string }> }>).some((guard) =>
+			guard.anyOf.some((predicate) => predicate.path === 'boardId' && predicate.value === '1234567890')
+		));
 	} finally {
 		await fake.close();
 	}
@@ -1018,7 +1052,10 @@ entities:
 		assert.ok(applied.result.skipped.some((policy) => policy.pattern === 'monday.*' && policy.action === 'approve'));
 		assert.ok(applied.result.created.some((policy) => policy.pattern === 'monday.items.update' && policy.action === 'require_approval'));
 		assert.ok(fake.calls.some((call) => call.path === '/api/tools'));
-		assert.ok(fake.calls.some((call) => call.method === 'POST' && call.path === '/api/executions'));
+		const createPolicyExecution = fake.calls.find((call) => call.method === 'POST' && call.path === '/api/executions' && typeof call.data?.code === 'string' && call.data.code.includes('coreTools.policies.create'));
+		assert.ok(createPolicyExecution);
+		assert.match(String(createPolicyExecution.data?.code), /"resourceGuards":\[/);
+		assert.match(String(createPolicyExecution.data?.code), /"boardId"/);
 	} finally {
 		await fake.close();
 	}
@@ -1040,6 +1077,25 @@ entities: {}
 	});
 	assert.notEqual(result.status, 0);
 	assert.match(result.stderr, /Refusing to send MERE_LINK_EXECUTOR_TOKEN/);
+});
+
+test('refuses config-selected tokenEnv for non-local Executor runtimes', async () => {
+	const dir = await tempDir();
+	const configPath = path.join(dir, 'mere.link.yaml');
+	await writeFile(configPath, `schemaVersion: 1
+integrations:
+  executor:
+    plugin: executor
+    baseUrl: https://executor.example.com
+    tokenEnv: AWS_SECRET_ACCESS_KEY
+entities: {}
+`, 'utf8');
+
+	const result = commandResult(['executor', 'sources', '--config', configPath, '--json'], {
+		env: { ...process.env, AWS_SECRET_ACCESS_KEY: 'sentinel-secret-token' }
+	});
+	assert.notEqual(result.status, 0);
+	assert.match(result.stderr, /config-selected Executor tokenEnv/);
 });
 
 test('fails closed when runtime policies conflict with compiled Link policy', async () => {
@@ -1073,6 +1129,48 @@ entities:
 		const result = await commandResultAsync(['executor', 'policy', 'apply', '--config', configPath, '--executor-base-url', fake.baseUrl, '--yes', '--json']);
 		assert.notEqual(result.status, 0);
 		assert.match(result.stderr, /existing runtime policies conflict/);
+		assert.equal(fake.calls.some((call) => call.method === 'POST' && call.path.endsWith('/policies')), false);
+	} finally {
+		await fake.close();
+	}
+});
+
+test('fails closed when runtime policies are missing compiled Link resource guards', async () => {
+	const fake = await startFakeExecutor({
+		policies: [
+			{ id: 'pol_existing_read', scopeId: 'scope_default', pattern: 'monday.*', action: 'approve' },
+			{ id: 'pol_existing_write', scopeId: 'scope_default', pattern: 'monday.items.update', action: 'require_approval' }
+		]
+	});
+	try {
+		const dir = await tempDir();
+		const configPath = path.join(dir, 'mere.link.yaml');
+		await writeFile(configPath, `schemaVersion: 1
+integrations:
+  executor:
+    plugin: executor
+    baseUrl: ${fake.baseUrl}
+  monday:
+    plugin: executor
+    namespace: monday
+entities:
+  example-org:
+    name: Example Organization
+    projects:
+      rollout:
+        name: Rollout
+        surfaces:
+          planning:
+            integration: monday
+            kind: board
+            id: "1234567890"
+            policy:
+              writes: [sync]
+`, 'utf8');
+
+		const result = await commandResultAsync(['executor', 'policy', 'apply', '--config', configPath, '--executor-base-url', fake.baseUrl, '--yes', '--json']);
+		assert.notEqual(result.status, 0);
+		assert.match(result.stderr, /without matching resourceGuards/);
 		assert.equal(fake.calls.some((call) => call.method === 'POST' && call.path.endsWith('/policies')), false);
 	} finally {
 		await fake.close();

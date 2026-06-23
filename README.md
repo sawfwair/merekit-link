@@ -39,7 +39,7 @@ mere-link executor sources --executor-base-url http://127.0.0.1:4788 --json
 mere-link executor tools search "github issue" --executor-base-url http://127.0.0.1:4788 --json
 ```
 
-If the runtime requires a bearer token, set `MERE_LINK_EXECUTOR_TOKEN`, declare `tokenEnv` on the Executor integration, or pass `--executor-token-env ENV_NAME`. For non-local Executor URLs declared in config, use `tokenEnv`; Link refuses to forward the global `MERE_LINK_EXECUTOR_TOKEN` to those runtimes.
+If the runtime requires a bearer token, set `MERE_LINK_EXECUTOR_TOKEN`, declare `tokenEnv` on a local Executor integration, or pass `--executor-token-env ENV_NAME`. For non-local Executor URLs declared in config, pass `--executor-token-env` after verifying the destination; Link refuses to forward config-selected token env vars or the global `MERE_LINK_EXECUTOR_TOKEN` to those runtimes.
 
 ## Docs
 
@@ -121,7 +121,7 @@ mere-link executor policy apply --config mere.link.yaml --yes --json
 ```
 
 Executor reads and writes through Link require a declared surface and matching resource arguments unless the config declares an explicit broad `namespace`, `source`, or exact `tool` surface. Writes also require compiled write policy and `--apply`.
-Compiled plans expose Link's local resource checks as `resourceGuards`, made from `ArgumentPredicate` entries such as `boardId equals <declared board>`.
+Compiled plans expose Link's resource checks as `resourceGuards`, made from `ArgumentPredicate` entries such as `boardId equals <declared board>`. Link checks them before invoking tools and includes them when applying Executor policy; if an existing runtime policy is missing the compiled guards, policy apply fails closed.
 
 Relay-backed local capabilities use the same pattern. A Mac or local AI node can be declared as Executor namespaces while Relay owns the live outbound tunnel:
 

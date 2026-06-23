@@ -13,7 +13,7 @@ MereKit Link treats declarative policy as higher authority than runtime affordan
 - Executor writes require compiled write policy and `--apply`.
 - Link resource guards are local `ArgumentPredicate` checks over invocation arguments.
 - Operator policy defaults to deny and explicit deny rules win over allows.
-- The global `MERE_LINK_EXECUTOR_TOKEN` is not sent to non-local Executor URLs selected by config.
+- Config-selected Executor tokens are not sent to non-local Executor URLs; remote tokens require `--executor-token-env`.
 - JSON, YAML, subprocess, and Executor HTTP calls stay in `src/runtime/*`.
 
 ## Why Planning Needs Policy
@@ -27,7 +27,7 @@ Compiled Executor rules do two things:
 - approve reads for declared namespaces
 - block or require approval for known write patterns
 
-Writable resource surfaces also compile Link-side `resourceGuards`. Link checks those resource arguments locally before invoking write-capable tools.
+Writable resource surfaces also compile `resourceGuards`. Link checks those resource arguments locally before invoking write-capable tools, includes the guards when applying Executor policy, and refuses to skip over an existing runtime policy that is missing the compiled guards.
 
 Policy apply fails closed when existing runtime policies conflict with the compiled Link policy. Remove stale runtime grants and re-run apply rather than relying on ambiguous runtime precedence.
 

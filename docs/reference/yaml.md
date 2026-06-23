@@ -70,7 +70,7 @@ links:
 | `workspace` | Optional workspace or tenant identifier used by some plugins. |
 | `namespace` | Executor namespace for product integrations. |
 | `baseUrl` | Executor HTTP runtime URL. |
-| `tokenEnv` | Environment variable that contains a bearer token. |
+| `tokenEnv` | Environment variable that contains a bearer token for a local Executor runtime. Non-local config URLs require `--executor-token-env`. |
 
 ## Operator Fields
 

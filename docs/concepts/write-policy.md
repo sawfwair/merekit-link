@@ -59,7 +59,7 @@ Existing Mere Projects records are linked without overwriting rich narrative fie
 
 Executor-backed reads and writes require a declared surface and matching resource arguments. Writes also require compiled Link policy and `--apply`.
 
-Compiled plans call these local checks `resourceGuards`. Each guard contains `ArgumentPredicate` entries such as `boardId equals <declared board>`, and Link accepts the invocation when a writable surface guard matches the supplied arguments.
+Compiled plans call these checks `resourceGuards`. Each guard contains `ArgumentPredicate` entries such as `boardId equals <declared board>`, and Link accepts the invocation when a writable surface guard matches the supplied arguments. Policy apply sends those guards to Executor and fails closed if an existing runtime policy is missing them.
 
 ```sh
 mere-link executor invoke write monday.items.update \
