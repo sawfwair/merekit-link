@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitepress';
+import { mereMarkdown } from './theme/mere/markdown.js';
 
 function resolveBase(): string {
 	const explicit = process.env.DOCS_BASE?.trim();
@@ -23,12 +24,7 @@ export default defineConfig({
 		['meta', { property: 'og:title', content: 'MereKit Link' }],
 		['meta', { property: 'og:description', content: 'Declare work surfaces, inspect project context, and gate agent writes through policy.' }]
 	],
-	markdown: {
-		theme: {
-			light: 'github-light',
-			dark: 'github-dark'
-		}
-	},
+	markdown: mereMarkdown(),
 	themeConfig: {
 		siteTitle: 'MereKit Link',
 		search: { provider: 'local' },
